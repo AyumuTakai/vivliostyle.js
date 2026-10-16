@@ -26,6 +26,7 @@ import * as Exprs from "./exprs";
 import * as Font from "./font";
 import * as OPS from "./ops";
 import * as Task from "./task";
+import { fromPromise } from "./task-bridge";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
 import * as XmlDoc from "./xml-doc";
@@ -137,11 +138,11 @@ export class TOCView implements Vgen.CustomRendererFactory {
   /** @override */
   makeCustomRenderer(xmldoc: XmlDoc.XMLDocHolder): Vgen.CustomRenderer {
     const renderer = this.rendererFactory.makeCustomRenderer(xmldoc);
-    return (
+    return async (
       srcElem: Element,
       viewParent: Element,
       computedStyle: { [key: string]: Css.Val },
-    ): Task.Result<Element | null> => {
+    ): Promise<Element | null> => {
       const behavior = computedStyle["behavior"];
       if (behavior) {
         switch (behavior.toString()) {
@@ -247,7 +248,7 @@ export class TOCView implements Vgen.CustomRendererFactory {
           element.setAttribute("aria-hidden", "true");
         }
       }
-      return Task.newResult(element as Element);
+      return element as Element;
     };
   }
 
@@ -286,22 +287,25 @@ export class TOCView implements Vgen.CustomRendererFactory {
         viewportSize.height,
       );
       const customRenderer = this.makeCustomRenderer(xmldoc);
-      OPS.StyleInstance.create(
-        style,
-        xmldoc,
-        this.lang,
-        viewport,
-        this.clientLayout,
-        this.fontMapper,
-        customRenderer,
-        this.fallbackMap,
-        0,
-        this.documentURLTransformer,
-        this.counterStore,
-        this.cmykStore,
-        this.pref,
-        null,
-        null,
+      fromPromise(
+        OPS.StyleInstance.create(
+          style,
+          xmldoc,
+          this.lang,
+          viewport,
+          this.clientLayout,
+          this.fontMapper,
+          customRenderer,
+          this.fallbackMap,
+          0,
+          this.documentURLTransformer,
+          this.counterStore,
+          this.cmykStore,
+          this.pref,
+          null,
+          null,
+        ),
+        "StyleInstance.create",
       ).then((instance) => {
         instance.layoutNextPage(page, null).then(() => {
           this.setAutoHeight(elem, 2);

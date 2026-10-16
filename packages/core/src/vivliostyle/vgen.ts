@@ -134,7 +134,7 @@ export type CustomRenderer = (
   p1: Element,
   p2: Element,
   p3: { [key: string]: Css.Val },
-) => Task.Result<Element | null>;
+) => Promise<Element | null>;
 
 export interface CustomRendererFactory {
   makeCustomRenderer(xmldoc: XmlDoc.XMLDocHolder): CustomRenderer;
@@ -2200,10 +2200,9 @@ export class ViewFactory
         const parentNode = nodeContext.parent
           ? nodeContext.parent.viewNode
           : null;
-        elemResult = this.customRenderer(
-          element,
-          parentNode as Element,
-          computedStyle,
+        elemResult = fromPromise(
+          this.customRenderer(element, parentNode as Element, computedStyle),
+          "customRenderer",
         );
       } else {
         elemResult = Task.newResult(null);

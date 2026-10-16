@@ -52,11 +52,7 @@ import * as PageMaster from "./page-master";
 import * as Scripts from "./scripts";
 import * as Task from "./task";
 import * as TaskUtil from "./task-util";
-import {
-  fetcherResult,
-  fromPromise,
-  waitForFetchersResult,
-} from "./task-bridge";
+import { waitForFetchersResult } from "./task-bridge";
 import * as TextPolyfill from "./text-polyfill";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
@@ -517,7 +513,7 @@ export class StyleInstance
     });
   }
 
-  static create(
+  static async create(
     style: Style,
     xmldoc: XmlDoc.XMLDocHolder,
     defaultLang: string | null,
@@ -535,7 +531,7 @@ export class StyleInstance
     docTitle: string | null,
     pageProgression?: Constants.PageProgression | null,
     isVersoFirstPage?: boolean,
-  ): Task.Result<StyleInstance> {
+  ): Promise<StyleInstance> {
     const instance = new StyleInstance(
       style,
       xmldoc,
@@ -555,19 +551,11 @@ export class StyleInstance
       pageProgression,
       isVersoFirstPage,
     );
-    const frame: Task.Frame<StyleInstance> = Task.newFrame(
-      "StyleInstance.create",
-    );
-    instance.loadFontsAndScripts().then(() => {
-      frame.finish(instance);
-    });
-    return frame.result();
+    await instance.loadFontsAndScripts();
+    return instance;
   }
 
-  private loadFontsAndScripts(): Task.Result<boolean> {
-    const frame: Task.Frame<boolean> = Task.newFrame(
-      "StyleInstance.loadFontsAndScripts",
-    );
+  private async loadFontsAndScripts(): Promise<boolean> {
     const srcFaces = [] as Font.Face[];
     for (const fontFace of this.style.fontFaces) {
       if (fontFace.condition && !fontFace.condition.evaluate(this)) {
@@ -577,18 +565,13 @@ export class StyleInstance
       const srcFace = new Font.Face(properties);
       srcFaces.push(srcFace);
     }
-    this.fontMapper.findOrLoadFonts(srcFaces, this.faces).then(() => {
-      // JavaScript in HTML documents support
-      fromPromise(
-        Scripts.loadScriptsInHead(
-          this.xmldoc.document,
-          this.viewport.window,
-          this.styler,
-        ),
-        "loadScriptsInHead",
-      ).thenFinish(frame);
-    });
-    return frame.result();
+    await this.fontMapper.findOrLoadFonts(srcFaces, this.faces);
+    // JavaScript in HTML documents support
+    return Scripts.loadScriptsInHead(
+      this.xmldoc.document,
+      this.viewport.window,
+      this.styler,
+    );
   }
 
   private matchStartPageSide(side: string | null): boolean {

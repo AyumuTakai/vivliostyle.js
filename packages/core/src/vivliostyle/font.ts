@@ -25,7 +25,6 @@ import * as Exprs from "./exprs";
 import * as Logging from "./logging";
 import * as Net from "./net";
 import * as Task from "./task";
-import { fromPromise } from "./task-bridge";
 import * as TaskUtil from "./task-util";
 
 /**
@@ -264,10 +263,10 @@ export class Mapper {
     return fetcher;
   }
 
-  findOrLoadFonts(
+  async findOrLoadFonts(
     srcFaces: Face[],
     documentFaces: DocumentFaces,
-  ): Task.Result<boolean> {
+  ): Promise<boolean> {
     const fetchers = [] as TaskUtil.Fetcher<Face | null>[];
     for (const srcFace of srcFaces) {
       if (!srcFace.src || !srcFace.family) {
@@ -276,19 +275,6 @@ export class Mapper {
       }
       fetchers.push(this.loadFont(srcFace, documentFaces));
     }
-    if (fetchers.every((fetcher) => fetcher.hasArrived())) {
-      // Nothing to wait for: keep the synchronous fast path.
-      this.reorderFontFaceRules(fetchers);
-      return this.startLoadingFonts()
-        ? fromPromise(this.waitFontLoading(), "waitFontLoading")
-        : Task.newResult(true);
-    }
-    return fromPromise(this.loadFontsAsync(fetchers), "findOrLoadFonts");
-  }
-
-  private async loadFontsAsync(
-    fetchers: TaskUtil.Fetcher<Face | null>[],
-  ): Promise<boolean> {
     await TaskUtil.waitForFetchers(fetchers);
     this.reorderFontFaceRules(fetchers);
     if (this.startLoadingFonts()) {

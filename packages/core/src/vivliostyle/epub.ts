@@ -3835,7 +3835,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
     srcElem: Element,
     viewParent: Element,
     computedStyle: { [key: string]: Css.Val },
-  ): Task.Result<Element | null> {
+  ): Element {
     let data = srcElem.getAttribute("data");
     let result: Element | null = null;
     if (data) {
@@ -3899,15 +3899,15 @@ export class OPFView implements Vgen.CustomRendererFactory {
     }
 
     // Need to cast because we need {Element}, not {!Element}
-    return Task.newResult(result as Element);
+    return result as Element;
   }
 
-  makeMathJaxView(
+  async makeMathJaxView(
     xmldoc: XmlDoc.XMLDocHolder,
     srcElem: Element,
     viewParent: Element,
     computedStyle: { [key: string]: Css.Val },
-  ): Task.Result<Element | null> {
+  ): Promise<Element | null> {
     // See if MathJax installed, use it if it is.
     const hub = getMathJaxHub();
     if (hub) {
@@ -3919,14 +3919,13 @@ export class OPFView implements Vgen.CustomRendererFactory {
       span.appendChild(clonedMath);
       const queue = hub["queue"];
       queue["Push"](["Typeset", hub, span]);
-      const frame: Task.Frame<Element> = Task.newFrame("makeMathJaxView");
-      const continuation = frame.suspend();
-      queue["Push"](() => {
-        continuation.schedule(span);
+      return new Promise<Element>((resolve) => {
+        queue["Push"](() => {
+          resolve(span);
+        });
       });
-      return frame.result();
     }
-    return Task.newResult<Element | null>(null);
+    return null;
   }
 
   private resolveURLsInMathML(node: Node, xmldoc: XmlDoc.XMLDocHolder) {
@@ -3960,12 +3959,13 @@ export class OPFView implements Vgen.CustomRendererFactory {
   }
 
   /** @override */
+
   makeCustomRenderer(xmldoc: XmlDoc.XMLDocHolder): Vgen.CustomRenderer {
-    return (
+    return async (
       srcElem: Element,
       viewParent: Element,
       computedStyle: { [key: string]: Css.Val },
-    ): Task.Result<Element | null> => {
+    ): Promise<Element | null> => {
       if (
         srcElem.localName == "object" &&
         srcElem.namespaceURI == Base.NS.XHTML
@@ -3979,7 +3979,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
       ) {
         return this.makeMathJaxView(xmldoc, srcElem, viewParent, computedStyle);
       }
-      return Task.newResult<Element | null>(null);
+      return null;
     };
   }
 
@@ -4114,24 +4114,27 @@ export class OPFView implements Vgen.CustomRendererFactory {
       const pubTitle = (pubTitles && pubTitles[0] && pubTitles[0]["v"]) || "";
       const docTitle = item.title || "";
 
-      OPS.StyleInstance.create(
-        style,
-        xmldoc,
-        this.opf.lang,
-        viewport,
-        this.clientLayout,
-        this.fontMapper,
-        customRenderer,
-        this.opf.fallbackMap,
-        pageNumberOffset,
-        this.opf.documentURLTransformer,
-        this.counterStore,
-        this.cmykStore,
-        this.pref,
-        pubTitle,
-        docTitle,
-        this.opf.pageProgression,
-        isVersoFirstPage,
+      fromPromise(
+        OPS.StyleInstance.create(
+          style,
+          xmldoc,
+          this.opf.lang,
+          viewport,
+          this.clientLayout,
+          this.fontMapper,
+          customRenderer,
+          this.opf.fallbackMap,
+          pageNumberOffset,
+          this.opf.documentURLTransformer,
+          this.counterStore,
+          this.cmykStore,
+          this.pref,
+          pubTitle,
+          docTitle,
+          this.opf.pageProgression,
+          isVersoFirstPage,
+        ),
+        "StyleInstance.create",
       ).then((instance) => {
         if (!this.opf.pageProgression && instance.pageProgression) {
           // Use the first instance's page progression as the global page progression.
