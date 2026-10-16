@@ -4153,6 +4153,19 @@ export class RenderLock {
       this.holder = next.owner;
       this.depth = 1;
       next.grant();
+      // The lock is reentrant: the other waiters of the same owner take it
+      // too (they may depend on each other), instead of waiting until it is
+      // released again.
+      for (let i = 0; i < this.waiters.length;) {
+        const waiter = this.waiters[i];
+        if (waiter.owner === next.owner) {
+          this.waiters.splice(i, 1);
+          this.depth++;
+          waiter.grant();
+        } else {
+          i++;
+        }
+      }
     }
     this.notify();
   }

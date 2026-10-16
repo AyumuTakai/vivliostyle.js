@@ -24,6 +24,81 @@ import * as adapt_xmldoc from "../../../src/vivliostyle/xml-doc";
 import * as vivliostyle_plugin from "../../../src/vivliostyle/plugin";
 
 describe("epub", function () {
+  describe("AdaptiveViewer page replacement", function () {
+    function createViewer(showCurrent) {
+      var viewer = Object.create(adapt_viewer.AdaptiveViewer.prototype);
+      viewer.currentPage = { name: "current" };
+      viewer.currentSpread = null;
+      viewer.showCurrent = showCurrent;
+      return viewer;
+    }
+
+    it("shows the new page when the current page is replaced", function () {
+      var shown = [];
+      var viewer = createViewer(function (page) {
+        shown.push(page);
+        return Promise.resolve(null);
+      });
+      var newPage = { name: "new" };
+      viewer.pageReplacedListener({ target: viewer.currentPage, newPage });
+      expect(shown).toEqual([newPage]);
+    });
+
+    it("ignores the replacement of a page that is not displayed", function () {
+      var shown = [];
+      var viewer = createViewer(function (page) {
+        shown.push(page);
+        return Promise.resolve(null);
+      });
+      viewer.pageReplacedListener({ target: {}, newPage: {} });
+      expect(shown).toEqual([]);
+    });
+
+    it("shows the new page when a page of the spread is replaced", function () {
+      var shown = [];
+      var viewer = createViewer(function (page) {
+        shown.push(page);
+        return Promise.resolve(null);
+      });
+      var right = {};
+      viewer.currentSpread = { left: null, right };
+      var newPage = {};
+      viewer.pageReplacedListener({ target: right, newPage });
+      expect(shown).toEqual([newPage]);
+    });
+
+    it("logs a failure to show the page instead of leaving a rejected Promise", async function () {
+      var error = new Error("cannot show");
+      var viewer = createViewer(function () {
+        return Promise.reject(error);
+      });
+      var unhandled = [];
+      var onUnhandled = function (event) {
+        unhandled.push(event.reason);
+        event.preventDefault();
+      };
+      window.addEventListener("unhandledrejection", onUnhandled);
+      spyOn(adapt_logging.logger, "error");
+      try {
+        viewer.pageReplacedListener({
+          target: viewer.currentPage,
+          newPage: {},
+        });
+        // let the rejection (if it were not handled) be reported
+        await new Promise(function (resolve) {
+          setTimeout(resolve, 50);
+        });
+      } finally {
+        window.removeEventListener("unhandledrejection", onUnhandled);
+      }
+      expect(unhandled).toEqual([]);
+      expect(adapt_logging.logger.error).toHaveBeenCalledWith(
+        error,
+        jasmine.any(String),
+      );
+    });
+  });
+
   describe("AdaptiveViewer page sizes", function () {
     it("removes stale page sizes after pagination shrinks", function () {
       var viewer = Object.create(adapt_viewer.AdaptiveViewer.prototype);
@@ -713,6 +788,53 @@ describe("epub", function () {
       }, 20);
       await lock.changed(2000);
       expect(performance.now() - start).toBeLessThan(1000);
+    });
+
+    it("hands the lock to all the waiters of the same owner at once", async function () {
+      var lock = new adapt_epub.RenderLock();
+      var holder = {};
+      var first = {};
+      var second = {};
+      lock.tryAcquire(holder);
+      var granted = [];
+      // `second` waits twice, and `first` waits between them
+      var waiters = [
+        lock.acquire(second).then(() => granted.push("second-1")),
+        lock.acquire(first).then(() => granted.push("first")),
+        lock.acquire(second).then(() => granted.push("second-2")),
+      ];
+      lock.release(holder);
+      // Both waiters of `second` (not only the first one) have the lock
+      await Promise.all([waiters[0], waiters[2]]);
+      expect(granted).toEqual(["second-1", "second-2"]);
+      expect(lock.isHeldByAnother(first)).toBe(true);
+      // `first` gets the lock after `second` has released it as many times as it took it
+      lock.release(second);
+      lock.release(second);
+      await waiters[1];
+      expect(granted).toEqual(["second-1", "second-2", "first"]);
+      expect(lock.isHeldByAnother(second)).toBe(true);
+      lock.release(first);
+      expect(lock.isHeldByAnother({})).toBe(false);
+    });
+
+    it("keeps the lock for the owner until all the grants are released", async function () {
+      var lock = new adapt_epub.RenderLock();
+      var holder = {};
+      var other = {};
+      var third = {};
+      lock.tryAcquire(holder);
+      var waiters = [lock.acquire(other), lock.acquire(other)];
+      var thirdWaiter = lock.acquire(third);
+      lock.release(holder);
+      await Promise.all(waiters);
+      // two grants: the lock is not free after one release
+      lock.release(other);
+      expect(lock.isHeldByAnother(third)).toBe(true);
+      lock.release(other);
+      await thirdWaiter;
+      expect(lock.isHeldByAnother(other)).toBe(true);
+      lock.release(third);
     });
 
     it("stops waiting for a change when the signal is aborted", async function () {

@@ -485,11 +485,21 @@ export class AdaptiveViewer {
     const target = evt.target;
     if (spread) {
       if (spread.left === target || spread.right === target) {
-        this.showCurrent(evt.newPage);
+        this.showReplacedPage(evt.newPage);
       }
     } else if (currentPage === evt.target) {
-      this.showCurrent(evt.newPage);
+      this.showReplacedPage(evt.newPage);
     }
+  }
+
+  /**
+   * Shows the page that has replaced the displayed one. Nobody waits for the
+   * result, so a failure is logged here.
+   */
+  private showReplacedPage(page: Vtree.Page): void {
+    this.showCurrent(page).catch((err) => {
+      Logging.logger.error(err, "Error while showing the replaced page");
+    });
   }
 
   /**
