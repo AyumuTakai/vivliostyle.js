@@ -21,7 +21,6 @@ import * as Css from "./css";
 import * as Diff from "./diff";
 import * as Exprs from "./exprs";
 import * as GeometryUtil from "./geometry-util";
-import * as Task from "./task";
 import * as TaskUtil from "./task-util";
 
 export type FormattingContextType =
@@ -647,15 +646,6 @@ export namespace Net {
       opt_required?: boolean,
       opt_message?: string,
     ): Promise<Resource | null>;
-    /**
-     * Same as `load`, for the code that still uses Task/Result. The Result is
-     * available at once if the resource has already been loaded.
-     */
-    loadResult(
-      url: string,
-      opt_required?: boolean,
-      opt_message?: string,
-    ): Task.Result<Resource | null>;
     /**
      * @return fetcher for the resource for the given URL
      */

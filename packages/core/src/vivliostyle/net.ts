@@ -20,8 +20,6 @@
  */
 import * as Base from "./base";
 import * as Logging from "./logging";
-import * as Task from "./task";
-import { fromPromise } from "./task-bridge";
 import * as TaskUtil from "./task-util";
 import { Net, XmlDoc } from "./types";
 import { UserAgentXml } from "./assets";
@@ -168,25 +166,6 @@ export class ResourceStore<Resource> implements Net.ResourceStore<Resource> {
       return resource;
     }
     return this.fetch(url, opt_required, opt_message).get();
-  }
-
-  /**
-   * Same as `load`, for the code that still uses Task/Result. The Result is
-   * available at once if the resource has already been loaded.
-   */
-  loadResult(
-    url: string,
-    opt_required?: boolean,
-    opt_message?: string,
-  ): Task.Result<Resource | null> {
-    const resource = this.resources[Base.stripFragment(url)];
-    if (typeof resource != "undefined") {
-      return Task.newResult(resource);
-    }
-    return fromPromise(
-      this.load(url, opt_required, opt_message),
-      "ResourceStore.load",
-    );
   }
 
   private async fetchInner(

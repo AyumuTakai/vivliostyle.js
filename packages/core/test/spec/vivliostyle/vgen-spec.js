@@ -21,7 +21,6 @@ import * as CssTokenizer from "../../../src/vivliostyle/css-tokenizer";
 import * as Diff from "../../../src/vivliostyle/diff";
 import * as Exprs from "../../../src/vivliostyle/exprs";
 import * as Plugin from "../../../src/vivliostyle/plugin";
-import * as Task from "../../../src/vivliostyle/task";
 import * as Vgen from "../../../src/vivliostyle/vgen";
 
 describe("vgen", function () {
@@ -57,17 +56,6 @@ describe("vgen", function () {
 
       expect(Diff.restoreNewText(changes)).toBe("xABC");
       expect(nodeContext.preprocessedTextContent).toBe(changes);
-    });
-
-    it("accepts the result of a legacy task", async function () {
-      const factory = Object.create(Vgen.ViewFactory.prototype);
-      register((nodeContext, text) => Task.newResult(text + "T"));
-
-      const changes = await factory.preprocessTextContent(
-        createNodeContext("y"),
-      );
-
-      expect(Diff.restoreNewText(changes)).toBe("yT");
     });
 
     it("returns the text that was already preprocessed", async function () {

@@ -35,7 +35,6 @@ import * as Net from "./net";
 import * as OPS from "./ops";
 import * as Plugin from "./plugin";
 import * as SemanticFootnote from "./semantic-footnote";
-import * as Task from "./task";
 import { sleep } from "./task-util";
 import * as Toc from "./toc";
 import * as Vgen from "./vgen";
@@ -90,8 +89,6 @@ export class EPUBDocStore extends OPS.OPSDocStore {
   primaryOPFByEPubURL: { [key: string]: OPFDoc } = {};
   deobfuscators: { [key: string]: Font.Deobfuscator } = {};
   documents: { [key: string]: Promise<XmlDoc.XMLDocHolder | null> } = {};
-  /** Resolved values of `documents`, to answer `loadResult` at once. */
-  private loadedDocuments: { [key: string]: XmlDoc.XMLDocHolder | null } = {};
 
   private constructor(
     authorStyleSheets: OPS.StyleSheetParam[] | null = null,
@@ -343,7 +340,7 @@ export class EPUBDocStore extends OPS.OPSDocStore {
 
   addDocument(url: string, doc: Document): Promise<XmlDoc.XMLDocHolder | null> {
     const docURL = Base.stripFragment(url);
-    const r = (this.documents[docURL] = this.parseOPSResource({
+    return (this.documents[docURL] = this.parseOPSResource({
       status: 200,
       statusText: "",
       url: docURL,
@@ -352,10 +349,6 @@ export class EPUBDocStore extends OPS.OPSDocStore {
       responseXML: doc,
       responseBlob: null,
     }));
-    r.then((xmldoc) => {
-      this.loadedDocuments[docURL] = xmldoc;
-    });
-    return r;
   }
 
   reportLoadError(docURL: string): void {
@@ -430,18 +423,6 @@ export class EPUBDocStore extends OPS.OPSDocStore {
       throw new Error(`Failed to load ${docURL}`);
     }
     return xmldoc;
-  }
-
-  override loadResult(url: string): Task.Result<XmlDoc.XMLDocHolder> {
-    const docURL = Base.stripFragment(url);
-    if (docURL in this.loadedDocuments) {
-      return Task.newResult(this.loadedDocuments[docURL]);
-    }
-    return super.loadResult(
-      docURL,
-      true,
-      `Failed to fetch a source document from ${docURL}`,
-    );
   }
 
   override processViewportMeta(meta: Element): string {

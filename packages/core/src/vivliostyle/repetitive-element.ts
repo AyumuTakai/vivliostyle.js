@@ -25,7 +25,6 @@ import * as LayoutRetryers from "./layout-retryers";
 import * as LayoutUtil from "./layout-util";
 import * as Plugin from "./plugin";
 import * as Shared from "./shared";
-import * as Task from "./task";
 import * as VtreeImpl from "./vtree";
 import * as Layout from "./layout";
 import {

@@ -137,9 +137,9 @@ yarn version:bump
 
 - Defines constants used throughout the library.
 
-### `vivliostyle/task.ts`
+### `vivliostyle/task-util.ts`
 
-- Task scheduling.
+- Utilities for asynchronous code (`sleep`, `timeSlice`, `Fetcher`).
 
 ### `vivliostyle/exprs.ts`
 

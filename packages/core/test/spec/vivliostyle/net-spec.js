@@ -17,7 +17,6 @@
 
 import * as adapt_base from "../../../src/vivliostyle/base";
 import * as adapt_net from "../../../src/vivliostyle/net";
-import * as adapt_task from "../../../src/vivliostyle/task";
 import * as adapt_xmldoc from "../../../src/vivliostyle/xml-doc";
 
 describe("net", function () {
@@ -69,45 +68,6 @@ describe("net", function () {
       expect(await store.load(url)).toBe("HELLO");
       expect(parseCount).toBe(1);
       expect(store.resources[url]).toBe("HELLO");
-    });
-
-    it("loadResult gives the loaded resource at once, to code that still uses Result", async function () {
-      var store = newStore(async function (response) {
-        return response.responseText;
-      });
-      await store.load(url);
-
-      var seen = [];
-      await new Promise(function (resolve) {
-        adapt_task.start(function () {
-          var frame = adapt_task.newFrame("caller");
-          store.loadResult(url).then(function (v) {
-            seen.push(v);
-          });
-          // The callback ran synchronously, before this line.
-          expect(seen).toEqual(["hello"]);
-          resolve();
-          frame.finish(true);
-          return frame.result();
-        });
-      });
-    });
-
-    it("loadResult waits for a resource that has not been loaded yet", async function () {
-      var store = newStore(async function (response) {
-        return response.responseText;
-      });
-      var result = await new Promise(function (resolve) {
-        adapt_task.start(function () {
-          var frame = adapt_task.newFrame("caller");
-          store.loadResult(url).then(function (v) {
-            resolve(v);
-            frame.finish(true);
-          });
-          return frame.result();
-        });
-      });
-      expect(result).toBe("hello");
     });
 
     it("rejects load when a required resource gets an HTTP error", async function () {
