@@ -605,7 +605,7 @@ export class ViewFactory
   ): Task.Result<Vtree.ShadowContext | null> {
     const frame: Task.Frame<Vtree.ShadowContext | null> =
       Task.newFrame("createRefShadow");
-    this.xmldoc.store.load(href).then((refDocParam) => {
+    this.xmldoc.store.loadResult(href).then((refDocParam) => {
       const refDoc = refDocParam;
       if (refDoc) {
         const refElement = refDoc.getElement(href);

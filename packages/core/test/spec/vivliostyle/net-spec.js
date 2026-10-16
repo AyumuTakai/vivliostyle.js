@@ -17,7 +17,7 @@
 
 import * as adapt_base from "../../../src/vivliostyle/base";
 import * as adapt_net from "../../../src/vivliostyle/net";
-import { runLegacy } from "../../../src/vivliostyle/task-bridge";
+import * as adapt_task from "../../../src/vivliostyle/task";
 import * as adapt_xmldoc from "../../../src/vivliostyle/xml-doc";
 
 describe("net", function () {
@@ -32,10 +32,7 @@ describe("net", function () {
       expect(response.status).toBe(200);
       expect(response.contentType).toContain("text/html");
 
-      // parseXMLResource is still a legacy (Task-based) function.
-      var docHolder = await runLegacy(function () {
-        return adapt_xmldoc.parseXMLResource(response, docStore);
-      });
+      var docHolder = await adapt_xmldoc.parseXMLResource(response, docStore);
       expect(docHolder).not.toBeNull();
       expect(docHolder.document.documentElement.namespaceURI).toBe(
         adapt_base.NS.XHTML,
@@ -48,6 +45,82 @@ describe("net", function () {
       var response = await adapt_net.fetchFromURL("http://127.0.0.1:1/none");
       expect(response.status).toBe(0);
       expect(response.responseText).toBeNull();
+    });
+  });
+  describe("ResourceStore", function () {
+    var url = "data:text/plain,hello";
+
+    function newStore(parser) {
+      return new adapt_net.ResourceStore(
+        parser,
+        adapt_net.FetchResponseType.TEXT,
+      );
+    }
+
+    it("parses a resource once for concurrent loads and caches it", async function () {
+      var parseCount = 0;
+      var store = newStore(async function (response) {
+        parseCount++;
+        return response.responseText.toUpperCase();
+      });
+
+      var results = await Promise.all([store.load(url), store.load(url)]);
+      expect(results).toEqual(["HELLO", "HELLO"]);
+      expect(await store.load(url)).toBe("HELLO");
+      expect(parseCount).toBe(1);
+      expect(store.resources[url]).toBe("HELLO");
+    });
+
+    it("loadResult gives the loaded resource at once, to code that still uses Result", async function () {
+      var store = newStore(async function (response) {
+        return response.responseText;
+      });
+      await store.load(url);
+
+      var seen = [];
+      await new Promise(function (resolve) {
+        adapt_task.start(function () {
+          var frame = adapt_task.newFrame("caller");
+          store.loadResult(url).then(function (v) {
+            seen.push(v);
+          });
+          // The callback ran synchronously, before this line.
+          expect(seen).toEqual(["hello"]);
+          resolve();
+          frame.finish(true);
+          return frame.result();
+        });
+      });
+    });
+
+    it("loadResult waits for a resource that has not been loaded yet", async function () {
+      var store = newStore(async function (response) {
+        return response.responseText;
+      });
+      var result = await new Promise(function (resolve) {
+        adapt_task.start(function () {
+          var frame = adapt_task.newFrame("caller");
+          store.loadResult(url).then(function (v) {
+            resolve(v);
+            frame.finish(true);
+          });
+          return frame.result();
+        });
+      });
+      expect(result).toBe("hello");
+    });
+
+    it("rejects load when a required resource gets an HTTP error", async function () {
+      var store = newStore(async function (response) {
+        return response.responseText;
+      });
+      // The test server answers 404 for a path it does not serve.
+      await expectAsync(
+        store.load("/no-such-resource-for-the-test", true, "required resource"),
+      ).toBeRejectedWithError(/^required resource \(404/);
+      // A resource that is not required resolves, with what the parser made of
+      // the failed response (nothing here).
+      expect(await store.load("/no-such-resource-for-the-test-2")).toBeNull();
     });
   });
 });

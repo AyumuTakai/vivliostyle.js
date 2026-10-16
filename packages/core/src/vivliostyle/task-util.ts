@@ -67,6 +67,8 @@ export class Fetcher<T> {
   resource: T | null = null;
   private promise: Promise<T> | null = null;
   private piggybacks: ((p1: T) => void)[] = [];
+  /** True once someone has asked for the resource with `get()`. */
+  private observed: boolean = false;
   private fetch: (() => Promise<T>) | null;
 
   constructor(fetch: () => Promise<T>, opt_name?: string) {
@@ -101,11 +103,18 @@ export class Fetcher<T> {
           }
           return resource;
         });
-      // Log a failure even if nobody waits for the resource (as the former
-      // task-based implementation did), and keep it from being reported as an
-      // unhandled rejection. `get()` still rejects for callers who wait.
+      // Log a failure that nobody waits for (as the former task-based
+      // implementation did), and keep it from being reported as an unhandled
+      // rejection. A caller who waits with `get()` gets the rejection and is
+      // responsible for it.
       this.promise.catch((err) => {
-        Logging.logger.error(err, "Unhandled exception in fetcher", this.name);
+        if (!this.observed) {
+          Logging.logger.error(
+            err,
+            "Unhandled exception in fetcher",
+            this.name,
+          );
+        }
       });
     }
   }
@@ -123,6 +132,7 @@ export class Fetcher<T> {
    * fetched.
    */
   get(): Promise<T> {
+    this.observed = true;
     this.start();
     return this.promise;
   }

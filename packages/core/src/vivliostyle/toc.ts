@@ -269,7 +269,7 @@ export class TOCView implements Vgen.CustomRendererFactory {
     // but they need different styles. So, add "?viv-toc-box" to distinguish with TOC page URL.
     const tocBoxUrl = Base.toTocBoxURL(this.url);
 
-    this.store.load(tocBoxUrl).then((xmldoc) => {
+    this.store.loadResult(tocBoxUrl).then((xmldoc) => {
       for (const tocElem of findTocElements(xmldoc.document)) {
         // Set `data-vivliostyle-role="doc-toc"`
         tocElem.setAttribute("data-vivliostyle-role", "doc-toc");

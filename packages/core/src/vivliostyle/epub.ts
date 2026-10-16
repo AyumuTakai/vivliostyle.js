@@ -88,8 +88,10 @@ export class EPUBDocStore extends OPS.OPSDocStore {
   jsonStore: Net.JSONStore;
   opfByURL: { [key: string]: OPFDoc } = {};
   primaryOPFByEPubURL: { [key: string]: OPFDoc } = {};
-  deobfuscators: { [key: string]: (p1: Blob) => Task.Result<Blob> } = {};
-  documents: { [key: string]: Task.Result<XmlDoc.XMLDocHolder | null> } = {};
+  deobfuscators: { [key: string]: Font.Deobfuscator } = {};
+  documents: { [key: string]: Promise<XmlDoc.XMLDocHolder | null> } = {};
+  /** Resolved values of `documents`, to answer `loadResult` at once. */
+  private loadedDocuments: { [key: string]: XmlDoc.XMLDocHolder | null } = {};
 
   private constructor(
     authorStyleSheets: OPS.StyleSheetParam[] | null = null,
@@ -110,9 +112,8 @@ export class EPUBDocStore extends OPS.OPSDocStore {
     return Task.newResult(store);
   }
 
-  makeDeobfuscatorFactory():
-    ((p1: string) => ((p1: Blob) => Task.Result<Blob>) | null) | null {
-    return (url: string): ((p1: Blob) => Task.Result<Blob>) | null => {
+  makeDeobfuscatorFactory(): Font.DeobfuscatorFactory | null {
+    return (url: string): Font.Deobfuscator | null => {
       return this.deobfuscators[url];
     };
   }
@@ -121,12 +122,12 @@ export class EPUBDocStore extends OPS.OPSDocStore {
     url: string,
     opt_required?: boolean,
     opt_message?: string,
-  ): Task.Result<XmlDoc.XMLDocHolder> {
+  ): Promise<XmlDoc.XMLDocHolder> {
     return this.plainXMLStore.load(
       url,
       opt_required,
       opt_message,
-    ) as Task.Result<XmlDoc.XMLDocHolder>;
+    ) as Promise<XmlDoc.XMLDocHolder>;
   }
 
   startLoadingAsPlainXML(url: string): void {
@@ -137,256 +138,210 @@ export class EPUBDocStore extends OPS.OPSDocStore {
     url: string,
     opt_required?: boolean,
     opt_message?: string,
-  ): Task.Result<Base.JSON> {
+  ): Promise<Base.JSON> {
     return this.jsonStore.load(url, opt_required, opt_message);
   }
 
-  loadWebPubManifest(url: string, frame: Task.Frame<OPFDoc | null>): void {
-    this.loadAsJSON(url, true).then((manifestObj) => {
-      if (!manifestObj) {
-        this.reportLoadError(url);
-        frame.finish(null);
-        return;
-      }
-      OPFDoc.fromWebPubManifest(this, url, manifestObj, undefined, url).then(
-        (opf) => {
-          frame.finish(opf);
-        },
-      );
-    });
+  async loadWebPubManifest(url: string): Promise<OPFDoc | null> {
+    const manifestObj = await this.loadAsJSON(url, true);
+    if (!manifestObj) {
+      this.reportLoadError(url);
+      return null;
+    }
+    return OPFDoc.fromWebPubManifest(this, url, manifestObj, undefined, url);
   }
 
-  loadPubDoc(url: string): Task.Result<OPFDoc | null> {
-    const frame: Task.Frame<OPFDoc | null> = Task.newFrame("loadPubDoc");
-
+  async loadPubDoc(url: string): Promise<OPFDoc | null> {
     if (/\.opf(?:[#?]|$)/i.test(url)) {
       // EPUB OPF
       const [, pubURL, root] = url.match(/^((?:.*\/)?)([^/]*)$/);
-      this.loadOPF(pubURL, root).thenFinish(frame);
-    } else if (/\.json(?:ld)?(?:[#?]|$)/i.test(url)) {
+      return this.loadOPF(pubURL, root);
+    }
+    if (/\.json(?:ld)?(?:[#?]|$)/i.test(url)) {
       // Web Publication Manifest
-      this.loadWebPubManifest(url, frame);
-    } else if (shouldSkipHeadForWebPub(url)) {
+      return this.loadWebPubManifest(url);
+    }
+    if (shouldSkipHeadForWebPub(url)) {
       // Web Publication primary entry (X)HTML
       // Skip HEAD request for known document URLs and special schemes.
       // Browsers reject non-GET methods for data: and blob: URLs.
-      this.loadWebPub(url).then((opf) => {
-        if (opf) {
-          frame.finish(opf);
-          return;
-        }
-        // These URLs cannot be the root of an unzipped EPUB container.
-        this.reportLoadError(url);
-        frame.finish(null);
-      });
-    } else {
-      // For ambiguous URLs (no recognized extension), use HEAD to check
-      // content type and availability before loading.
-      fromPromise(
-        Net.fetchFromURL(url, undefined, "HEAD"),
-        "fetchFromURL",
-      ).then((response) => {
-        if (response.status >= 400) {
-          // This url can be the root of an unzipped EPUB.
-          this.loadEPUBDoc(url).then((opf) => {
-            if (opf) {
-              frame.finish(opf);
-              return;
-            }
-            Logging.logger.error(
-              `Failed to fetch a source document from ${url} (${response.status}${
-                response.statusText ? " " + response.statusText : ""
-              })`,
-            );
-            frame.finish(null);
-          });
-        } else {
-          if (
-            !response.status &&
-            !response.responseXML &&
-            !response.responseText &&
-            !response.responseBlob &&
-            !response.contentType
-          ) {
-            // Empty response
-            if (/\/[^/.]+(?:[#?]|$)/.test(url)) {
-              // Adding trailing "/" may solve the problem.
-              url = url.replace(/([#?]|$)/, "/$1");
-            } else {
-              // Ignore empty response of HEAD request, it may become OK with GET request.
-            }
-          }
-          if (response.contentType == "application/oebps-package+xml") {
-            // EPUB OPF (served with OPF content type but without .opf extension)
-            const [, pubURL, root] = url.match(/^((?:.*\/)?)([^/]*)$/);
-            this.loadOPF(pubURL, root).thenFinish(frame);
-          } else if (
-            response.contentType == "application/ld+json" ||
-            response.contentType == "application/webpub+json" ||
-            response.contentType == "application/audiobook+json" ||
-            response.contentType == "application/json"
-          ) {
-            // Web Publication Manifest (served with JSON content type)
-            this.loadWebPubManifest(url, frame);
-          } else {
-            // Web Publication primary entry (X)HTML
-            this.loadWebPub(url).then((opf) => {
-              if (opf) {
-                frame.finish(opf);
-                return;
-              }
-              // This url can be the root of an unzipped EPUB.
-              this.loadEPUBDoc(url).then((opf) => {
-                if (opf) {
-                  frame.finish(opf);
-                  return;
-                }
-                this.reportLoadError(url);
-                frame.finish(null);
-              });
-            });
-          }
-        }
-      });
+      const opf = await this.loadWebPub(url);
+      if (opf) {
+        return opf;
+      }
+      // These URLs cannot be the root of an unzipped EPUB container.
+      this.reportLoadError(url);
+      return null;
     }
-    return frame.result();
+
+    // For ambiguous URLs (no recognized extension), use HEAD to check
+    // content type and availability before loading.
+    const response = await Net.fetchFromURL(url, undefined, "HEAD");
+    if (response.status >= 400) {
+      // This url can be the root of an unzipped EPUB.
+      const opf = await this.loadEPUBDoc(url);
+      if (opf) {
+        return opf;
+      }
+      Logging.logger.error(
+        `Failed to fetch a source document from ${url} (${response.status}${
+          response.statusText ? " " + response.statusText : ""
+        })`,
+      );
+      return null;
+    }
+    if (
+      !response.status &&
+      !response.responseXML &&
+      !response.responseText &&
+      !response.responseBlob &&
+      !response.contentType
+    ) {
+      // Empty response
+      if (/\/[^/.]+(?:[#?]|$)/.test(url)) {
+        // Adding trailing "/" may solve the problem.
+        url = url.replace(/([#?]|$)/, "/$1");
+      } else {
+        // Ignore empty response of HEAD request, it may become OK with GET request.
+      }
+    }
+    if (response.contentType == "application/oebps-package+xml") {
+      // EPUB OPF (served with OPF content type but without .opf extension)
+      const [, pubURL, root] = url.match(/^((?:.*\/)?)([^/]*)$/);
+      return this.loadOPF(pubURL, root);
+    }
+    if (
+      response.contentType == "application/ld+json" ||
+      response.contentType == "application/webpub+json" ||
+      response.contentType == "application/audiobook+json" ||
+      response.contentType == "application/json"
+    ) {
+      // Web Publication Manifest (served with JSON content type)
+      return this.loadWebPubManifest(url);
+    }
+    // Web Publication primary entry (X)HTML
+    const webPub = await this.loadWebPub(url);
+    if (webPub) {
+      return webPub;
+    }
+    // This url can be the root of an unzipped EPUB.
+    const epub = await this.loadEPUBDoc(url);
+    if (epub) {
+      return epub;
+    }
+    this.reportLoadError(url);
+    return null;
   }
 
-  loadEPUBDoc(url: string): Task.Result<OPFDoc | null> {
-    const frame: Task.Frame<OPFDoc | null> = Task.newFrame("loadEPUBDoc");
+  async loadEPUBDoc(url: string): Promise<OPFDoc | null> {
     if (!url.endsWith("/")) {
       url = url + "/";
     }
     this.startLoadingAsPlainXML(url + "META-INF/encryption.xml");
     const containerURL = url + "META-INF/container.xml";
-    this.loadAsPlainXML(containerURL).then((containerXML) => {
-      if (containerXML) {
-        const roots = containerXML
-          .doc()
-          .child("container")
-          .child("rootfiles")
-          .child("rootfile")
-          .attribute("full-path");
-        for (const root of roots) {
-          if (root) {
-            this.loadOPF(url, root).thenFinish(frame);
-            return;
-          }
+    const containerXML = await this.loadAsPlainXML(containerURL);
+    if (containerXML) {
+      const roots = containerXML
+        .doc()
+        .child("container")
+        .child("rootfiles")
+        .child("rootfile")
+        .attribute("full-path");
+      for (const root of roots) {
+        if (root) {
+          return this.loadOPF(url, root);
         }
       }
-      frame.finish(null);
-    });
-    return frame.result();
+    }
+    return null;
   }
 
-  loadOPF(pubURL: string, root: string): Task.Result<OPFDoc | null> {
+  async loadOPF(pubURL: string, root: string): Promise<OPFDoc | null> {
     const url = pubURL + root;
     const opf = this.opfByURL[url];
     if (opf) {
-      return Task.newResult(opf);
+      return opf;
     }
-    const frame: Task.Frame<OPFDoc | null> = Task.newFrame("loadOPF");
-    this.loadAsPlainXML(url, true, `Failed to fetch EPUB OPF ${url}`).then(
-      (opfXML) => {
-        if (!opfXML) {
-          this.reportLoadError(url);
-        } else {
-          const registerOPF = (opf: OPFDoc) => {
-            this.opfByURL[url] = opf;
-            this.primaryOPFByEPubURL[pubURL] = opf;
-            frame.finish(opf);
-          };
-          if (this.plainXMLStore.resources[pubURL + "META-INF/container.xml"]) {
-            this.loadAsPlainXML(pubURL + "META-INF/encryption.xml").then(
-              (encXML) => {
-                registerOPF(OPFDoc.fromXMLDoc(this, pubURL, opfXML, encXML));
-              },
-            );
-          } else {
-            // OPF file is directly specified, not via container.xml.
-            // In this case, encryption.xml is not available.
-            registerOPF(OPFDoc.fromXMLDoc(this, pubURL, opfXML, null));
-          }
-        }
-      },
+    const opfXML = await this.loadAsPlainXML(
+      url,
+      true,
+      `Failed to fetch EPUB OPF ${url}`,
     );
-    return frame.result();
+    if (!opfXML) {
+      this.reportLoadError(url);
+      // The former implementation never finished here: the caller was left
+      // waiting. Report the failure to the caller instead.
+      throw new Error(`Failed to load EPUB OPF ${url}`);
+    }
+    let encXML: XmlDoc.XMLDocHolder | null = null;
+    if (this.plainXMLStore.resources[pubURL + "META-INF/container.xml"]) {
+      encXML = await this.loadAsPlainXML(pubURL + "META-INF/encryption.xml");
+    }
+    // else, OPF file is directly specified, not via container.xml.
+    // In this case, encryption.xml is not available.
+    const loaded = OPFDoc.fromXMLDoc(this, pubURL, opfXML, encXML);
+    this.opfByURL[url] = loaded;
+    this.primaryOPFByEPubURL[pubURL] = loaded;
+    return loaded;
   }
 
-  loadWebPub(url: string): Task.Result<OPFDoc | null> {
-    const frame: Task.Frame<OPFDoc | null> = Task.newFrame("loadWebPub");
-
+  async loadWebPub(url: string): Promise<OPFDoc | null> {
     // Load the primary entry page (X)HTML
-    this.load(url).then((xmldoc) => {
-      if (!xmldoc) {
-        this.reportLoadError(url);
-        frame.finish(null);
-      } else if (
-        xmldoc.document.querySelector(
-          "a[href='META-INF/'],a[href$='/META-INF/']",
-        )
-      ) {
-        // This is likely the directory listing of unzipped EPUB top directory
-        frame.finish(null);
-      } else {
-        const doc = xmldoc.document;
+    const xmldoc = await this.load(url);
+    if (!xmldoc) {
+      this.reportLoadError(url);
+      return null;
+    }
+    if (
+      xmldoc.document.querySelector("a[href='META-INF/'],a[href$='/META-INF/']")
+    ) {
+      // This is likely the directory listing of unzipped EPUB top directory
+      return null;
+    }
+    const doc = xmldoc.document;
 
-        // Find manifest, W3C WebPublication or Readium Web Publication Manifest
-        const manifestLink = doc.querySelector(
-          "link[rel='publication'],link[rel='manifest'][type='application/webpub+json']",
+    // Find manifest, W3C WebPublication or Readium Web Publication Manifest
+    const manifestLink = doc.querySelector(
+      "link[rel='publication'],link[rel='manifest'][type='application/webpub+json']",
+    );
+    if (manifestLink) {
+      const href = manifestLink.getAttribute("href");
+      if (href?.startsWith("#")) {
+        const manifestObj = Base.stringToJSON(
+          doc.getElementById(href.slice(1)).textContent,
         );
-        if (manifestLink) {
-          const href = manifestLink.getAttribute("href");
-          if (href?.startsWith("#")) {
-            const manifestObj = Base.stringToJSON(
-              doc.getElementById(href.slice(1)).textContent,
-            );
-            OPFDoc.fromWebPubManifest(this, url, manifestObj, doc).then(
-              (opf) => {
-                frame.finish(opf);
-              },
-            );
-          } else {
-            const manifestUrl = Base.resolveURL(
-              manifestLink.getAttribute("href"),
-              url,
-            );
-            this.loadAsJSON(
-              manifestUrl,
-              true,
-              `Failed to fetch Publication Manifest ${manifestUrl}`,
-            ).then((manifestObj) => {
-              OPFDoc.fromWebPubManifest(
-                this,
-                url,
-                manifestObj,
-                doc,
-                manifestUrl,
-              ).then((opf) => {
-                frame.finish(opf);
-              });
-            });
-          }
-        } else {
-          // No manifest
-          OPFDoc.fromWebPubManifest(this, url, {}, doc).then((opf) => {
-            if (opf.toc && opf.toc.src === xmldoc.url) {
-              // toc is the primary entry (X)HTML
-              if (Toc.findTocElements(doc).length === 0) {
-                // TOC is not found in the primary entry (X)HTML
-                opf.toc = null;
-              }
-            }
-            frame.finish(opf);
-          });
-        }
+        return OPFDoc.fromWebPubManifest(this, url, manifestObj, doc);
       }
-    });
-    return frame.result();
+      const manifestUrl = Base.resolveURL(
+        manifestLink.getAttribute("href"),
+        url,
+      );
+      const manifestObj = await this.loadAsJSON(
+        manifestUrl,
+        true,
+        `Failed to fetch Publication Manifest ${manifestUrl}`,
+      );
+      return OPFDoc.fromWebPubManifest(
+        this,
+        url,
+        manifestObj,
+        doc,
+        manifestUrl,
+      );
+    }
+    // No manifest
+    const opf = await OPFDoc.fromWebPubManifest(this, url, {}, doc);
+    if (opf.toc && opf.toc.src === xmldoc.url) {
+      // toc is the primary entry (X)HTML
+      if (Toc.findTocElements(doc).length === 0) {
+        // TOC is not found in the primary entry (X)HTML
+        opf.toc = null;
+      }
+    }
+    return opf;
   }
 
-  addDocument(url: string, doc: Document) {
-    const frame = Task.newFrame<XmlDoc.XMLDocHolder>("EPUBDocStore.load");
+  addDocument(url: string, doc: Document): Promise<XmlDoc.XMLDocHolder | null> {
     const docURL = Base.stripFragment(url);
     const r = (this.documents[docURL] = this.parseOPSResource({
       status: 200,
@@ -397,8 +352,10 @@ export class EPUBDocStore extends OPS.OPSDocStore {
       responseXML: doc,
       responseBlob: null,
     }));
-    r.thenFinish(frame);
-    return frame.result();
+    r.then((xmldoc) => {
+      this.loadedDocuments[docURL] = xmldoc;
+    });
+    return r;
   }
 
   reportLoadError(docURL: string): void {
@@ -455,27 +412,36 @@ export class EPUBDocStore extends OPS.OPSDocStore {
     }
   }
 
-  override load(url: string): Task.Result<XmlDoc.XMLDocHolder> {
+  override async load(url: string): Promise<XmlDoc.XMLDocHolder> {
     const docURL = Base.stripFragment(url);
-    let r = this.documents[docURL];
+    const r = this.documents[docURL];
     if (r) {
-      return r.isPending() ? r : Task.newResult(r.get());
-    } else {
-      const frame = Task.newFrame<XmlDoc.XMLDocHolder>("EPUBDocStore.load");
-      r = super.load(
-        docURL,
-        true,
-        `Failed to fetch a source document from ${docURL}`,
-      );
-      r.then((xmldoc: XmlDoc.XMLDocHolder) => {
-        if (!xmldoc) {
-          this.reportLoadError(docURL);
-        } else {
-          frame.finish(xmldoc);
-        }
-      });
-      return frame.result();
+      return r;
     }
+    const xmldoc = await super.load(
+      docURL,
+      true,
+      `Failed to fetch a source document from ${docURL}`,
+    );
+    if (!xmldoc) {
+      this.reportLoadError(docURL);
+      // The former implementation never finished here: the caller was left
+      // waiting. Report the failure to the caller instead.
+      throw new Error(`Failed to load ${docURL}`);
+    }
+    return xmldoc;
+  }
+
+  override loadResult(url: string): Task.Result<XmlDoc.XMLDocHolder> {
+    const docURL = Base.stripFragment(url);
+    if (docURL in this.loadedDocuments) {
+      return Task.newResult(this.loadedDocuments[docURL]);
+    }
+    return super.loadResult(
+      docURL,
+      true,
+      `Failed to fetch a source document from ${docURL}`,
+    );
   }
 
   override processViewportMeta(meta: Element): string {
@@ -559,35 +525,28 @@ export function getOPFItemId(item: OPFItem): string | null {
   return item.id;
 }
 
-export function makeDeobfuscator(uid: string): (p1: Blob) => Task.Result<Blob> {
-  return (blob) => {
-    const frame = Task.newFrame("deobfuscator") as Task.Frame<Blob>;
-    makeDigest("SHA-1", uid).then((hash) => {
-      const head = blob.slice(0, 1040);
-      const tail = blob.slice(1040, blob.size);
-      fromPromise(Net.readBlob(head), "readBlob").then((buf) => {
-        const dataView = new DataView(buf);
-        for (let k = 0; k < dataView.byteLength; k++) {
-          let b = dataView.getUint8(k);
-          b ^= hash[k % 20];
-          dataView.setUint8(k, b);
-        }
-        frame.finish(Net.makeBlob([dataView, tail]));
-      });
-    });
-    return frame.result();
+export function makeDeobfuscator(uid: string): Font.Deobfuscator {
+  return async (blob) => {
+    const hash = await makeDigest("SHA-1", uid);
+    const head = blob.slice(0, 1040);
+    const tail = blob.slice(1040, blob.size);
+    const buf = await Net.readBlob(head);
+    const dataView = new DataView(buf);
+    for (let k = 0; k < dataView.byteLength; k++) {
+      let b = dataView.getUint8(k);
+      b ^= hash[k % 20];
+      dataView.setUint8(k, b);
+    }
+    return Net.makeBlob([dataView, tail]);
   };
 }
 
-function makeDigest(algorithm: string, str: string): Task.Result<Uint8Array> {
-  const frame = Task.newFrame("makeDigest") as Task.Frame<Uint8Array>;
-  const continuation = frame.suspend();
-  window.crypto.subtle
-    .digest(algorithm, new TextEncoder().encode(str))
-    .then((buf) => {
-      continuation.schedule(new Uint8Array(buf));
-    });
-  return frame.result();
+async function makeDigest(algorithm: string, str: string): Promise<Uint8Array> {
+  const buf = await window.crypto.subtle.digest(
+    algorithm,
+    new TextEncoder().encode(str),
+  );
+  return new Uint8Array(buf);
 }
 
 type RawMeta = {
@@ -1189,7 +1148,7 @@ export class OPFDoc {
         }
         const item = this.spine[i++];
         item.epage = epage;
-        this.store.load(item.src).then((xmldoc) => {
+        this.store.loadResult(item.src).then((xmldoc) => {
           if (!xmldoc) {
             loopFrame.continueLoop();
             return;
@@ -1259,27 +1218,26 @@ export class OPFDoc {
   /**
    * Creates a fake OPF "document" that contains OPS chapters.
    */
-  static fromChapters(
+  static async fromChapters(
     store: EPUBDocStore,
     pubURL: string,
     params: OPFItemParam[],
     doc?: Document | null,
-  ): Task.Result<OPFDoc> {
+  ): Promise<OPFDoc> {
     const opf = new OPFDoc(store, pubURL, OPFDoc.buildChapters(pubURL, params));
     if (doc) {
-      return store.addDocument(params[0].url, doc).thenReturn(opf);
-    } else {
-      return Task.newResult(opf);
+      await store.addDocument(params[0].url, doc);
     }
+    return opf;
   }
 
-  static fromWebPubManifest(
+  static async fromWebPubManifest(
     store: EPUBDocStore,
     pubURL: string,
     manifestObj: Base.JSON,
     doc?: Document,
     manifestUrl?: string,
-  ): Task.Result<OPFDoc> {
+  ): Promise<OPFDoc> {
     let pageProgression: Constants.PageProgression | null = null;
     if (manifestObj["readingProgression"]) {
       pageProgression = manifestObj["readingProgression"];
@@ -1399,29 +1357,26 @@ export class OPFDoc {
         }
       },
     );
-    const frame: Task.Frame<OPFDoc> = Task.newFrame("fromWebPubManifest");
-    OPFDoc.fromChapters(store, pubURL, params).then((opf) => {
-      opf.pageProgression = pageProgression;
-      opf.metadata = metadata;
-      if (tocFound !== -1) {
-        opf.toc = opf.items[tocFound];
-      }
+    const opf = await OPFDoc.fromChapters(store, pubURL, params);
+    opf.pageProgression = pageProgression;
+    opf.metadata = metadata;
+    if (tocFound !== -1) {
+      opf.toc = opf.items[tocFound];
+    }
 
-      if (!opf.toc) {
-        opf.toc = manifestUrl
-          ? (opf.items[0] ?? null)
-          : opf.itemMapByPath[primaryEntryPath];
-      }
+    if (!opf.toc) {
+      opf.toc = manifestUrl
+        ? (opf.items[0] ?? null)
+        : opf.itemMapByPath[primaryEntryPath];
+    }
 
-      // remove items not in readingOrder (Issue #1257)
-      const readingOrderCount = manifestObj["readingOrder"]?.length;
-      if (readingOrderCount && readingOrderCount < opf.items.length) {
-        opf.items.splice(readingOrderCount);
-      }
+    // remove items not in readingOrder (Issue #1257)
+    const readingOrderCount = manifestObj["readingOrder"]?.length;
+    if (readingOrderCount && readingOrderCount < opf.items.length) {
+      opf.items.splice(readingOrderCount);
+    }
 
-      frame.finish(opf);
-    });
-    return frame.result();
+    return opf;
   }
 
   /**
@@ -1430,7 +1385,7 @@ export class OPFDoc {
   getCFI(spineIndex: number, offsetInItem: number): Task.Result<string | null> {
     const item = this.spine[spineIndex];
     const frame: Task.Frame<string | null> = Task.newFrame("getCFI");
-    this.store.load(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
+    this.store.loadResult(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
       const node = xmldoc.getNodeByOffset(offsetInItem);
       let cfi: string | null = null;
       if (node) {
@@ -1476,7 +1431,7 @@ export class OPFDoc {
         } else {
           item = this.spine[0];
         }
-        this.store.load(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
+        this.store.loadResult(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
           const nodeNav = fragment.navigate(xmldoc.document);
           const offset = xmldoc.getNodeOffset(
             nodeNav.node,
@@ -1531,7 +1486,7 @@ export class OPFDoc {
           spineIndex--;
         }
         const item = this.spine[spineIndex];
-        this.store.load(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
+        this.store.loadResult(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
           epage -= item.epage;
           if (epage > item.epageCount) {
             epage = item.epageCount;
@@ -1564,7 +1519,7 @@ export class OPFDoc {
       return Task.newResult(item.epage);
     }
     const frame: Task.Frame<number> = Task.newFrame("getEPage");
-    this.store.load(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
+    this.store.loadResult(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
       const totalOffset = xmldoc.getTotalOffset();
       const offset = Math.min(totalOffset, position.offsetInItem);
       frame.finish(item.epage + (offset * item.epageCount) / totalOffset);
@@ -1875,7 +1830,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
           return;
         }
         const item = this.opf.spine[spineIndex];
-        this.opf.store.load(item.src).then((xmldoc) => {
+        this.opf.store.loadResult(item.src).then((xmldoc) => {
           if (xmldoc) {
             totals[spineIndex] = xmldoc.getTotalOffset();
           }
@@ -4051,7 +4006,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
     }
     const item = this.opf.spine[spineIndex];
     const store = this.opf.store;
-    store.load(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
+    store.loadResult(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
       // EPUB Spine properties support
       const epubSpineProperties =
         item.itemRefElement.getAttribute("properties");

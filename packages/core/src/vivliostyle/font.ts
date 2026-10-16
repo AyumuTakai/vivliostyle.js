@@ -25,8 +25,19 @@ import * as Exprs from "./exprs";
 import * as Logging from "./logging";
 import * as Net from "./net";
 import * as Task from "./task";
-import { fromPromise, runLegacy } from "./task-bridge";
+import { fromPromise } from "./task-bridge";
 import * as TaskUtil from "./task-util";
+
+/**
+ * A function that deobfuscates the data of a font file.
+ */
+export type Deobfuscator = (blob: Blob) => Promise<Blob>;
+
+/**
+ * Takes the URL of a font file and returns the deobfuscator for it, or null if
+ * the font file is not obfuscated.
+ */
+export type DeobfuscatorFactory = (url: string) => Deobfuscator | null;
 
 function getFontTraitNames(properties: { [key: string]: Css.Val }): string[] {
   return Object.keys(properties)
@@ -121,11 +132,7 @@ export class DocumentFaces {
    */
   familyMap = {} as { [key: string]: string };
 
-  constructor(
-    public readonly deobfuscator:
-      | ((p1: string) => ((p1: Blob) => Task.Result<Blob>) | null)
-      | null,
-  ) {}
+  constructor(public readonly deobfuscator: DeobfuscatorFactory | null) {}
 
   registerFamily(srcFace: Face, viewFace: Face): void {
     const srcFamily = srcFace.family as string;
@@ -246,11 +253,7 @@ export class Mapper {
           if (!response.responseBlob) {
             return null;
           }
-          // The deobfuscator is still a legacy (Task-based) function.
-          const fontBytes = await runLegacy(
-            () => deobfuscator(response.responseBlob),
-            "deobfuscate",
-          );
+          const fontBytes = await deobfuscator(response.responseBlob);
           return this.initFont(srcFace, fontBytes, documentFaces);
         }
         return this.initFont(srcFace, null, documentFaces);

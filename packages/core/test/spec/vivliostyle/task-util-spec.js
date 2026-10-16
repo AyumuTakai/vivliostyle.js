@@ -1,3 +1,4 @@
+import * as adapt_logging from "../../../src/vivliostyle/logging";
 import * as adapt_taskutil from "../../../src/vivliostyle/task-util";
 
 describe("task-util", function () {
@@ -68,6 +69,29 @@ describe("task-util", function () {
       });
       await fetcher.get();
       expect(calls).toEqual(["A"]);
+    });
+
+    it("logs a failure that nobody waits for", async function () {
+      spyOn(adapt_logging.logger, "error");
+      var fetcher = new adapt_taskutil.Fetcher(async function () {
+        throw new Error("lost network");
+      }, "lost");
+      fetcher.start();
+      await adapt_taskutil.sleep(5);
+      expect(adapt_logging.logger.error).toHaveBeenCalledTimes(1);
+      expect(adapt_logging.logger.error.calls.argsFor(0)[0].message).toBe(
+        "lost network",
+      );
+    });
+
+    it("does not log a failure that a caller waits for", async function () {
+      spyOn(adapt_logging.logger, "error");
+      var fetcher = new adapt_taskutil.Fetcher(async function () {
+        throw new Error("lost network");
+      });
+      await expectAsync(fetcher.get()).toBeRejectedWithError("lost network");
+      await adapt_taskutil.sleep(5);
+      expect(adapt_logging.logger.error).not.toHaveBeenCalled();
     });
 
     it("rejects get() when the fetch fails", async function () {

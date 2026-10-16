@@ -21,7 +21,7 @@
 import * as Base from "./base";
 import * as Logging from "./logging";
 import * as Task from "./task";
-import { fetcherResult, runLegacy } from "./task-bridge";
+import { fromPromise } from "./task-bridge";
 import * as TaskUtil from "./task-util";
 import { Net, XmlDoc } from "./types";
 import { UserAgentXml } from "./assets";
@@ -150,24 +150,43 @@ export class ResourceStore<Resource> implements Net.ResourceStore<Resource> {
     public readonly parser: (
       p1: FetchResponse,
       p2: ResourceStore<Resource>,
-    ) => Task.Result<Resource | null>,
+    ) => Promise<Resource | null>,
     public readonly type: FetchResponseType,
   ) {}
 
   /**
    * @return resource for the given URL
    */
-  load(
+  async load(
+    url: string,
+    opt_required?: boolean,
+    opt_message?: string,
+  ): Promise<Resource | null> {
+    url = Base.stripFragment(url);
+    const resource = this.resources[url];
+    if (typeof resource != "undefined") {
+      return resource;
+    }
+    return this.fetch(url, opt_required, opt_message).get();
+  }
+
+  /**
+   * Same as `load`, for the code that still uses Task/Result. The Result is
+   * available at once if the resource has already been loaded.
+   */
+  loadResult(
     url: string,
     opt_required?: boolean,
     opt_message?: string,
   ): Task.Result<Resource | null> {
-    url = Base.stripFragment(url);
-    const resource = this.resources[url];
+    const resource = this.resources[Base.stripFragment(url)];
     if (typeof resource != "undefined") {
       return Task.newResult(resource);
     }
-    return fetcherResult(this.fetch(url, opt_required, opt_message));
+    return fromPromise(
+      this.load(url, opt_required, opt_message),
+      "ResourceStore.load",
+    );
   }
 
   private async fetchInner(
@@ -209,11 +228,7 @@ export class ResourceStore<Resource> implements Net.ResourceStore<Resource> {
       // Restore "user-agent.xml" URL
       response.url = url = userAgentXmlUrl;
     }
-    // The parsers are still legacy (Task-based) functions.
-    const resource = await runLegacy(
-      () => this.parser(response, this),
-      "ResourceStore.parse",
-    );
+    const resource = await this.parser(response, this);
     delete this.fetchers[url];
     this.resources[url] = resource;
     return resource;
@@ -256,12 +271,12 @@ export class ResourceStore<Resource> implements Net.ResourceStore<Resource> {
 
 export type JSONStore = ResourceStore<Base.JSON>;
 
-export function parseJSONResource(
+export async function parseJSONResource(
   response: FetchResponse,
   store: JSONStore,
-): Task.Result<Base.JSON> {
+): Promise<Base.JSON> {
   const text = response.responseText;
-  return Task.newResult(text ? Base.stringToJSON(text) : null);
+  return text ? Base.stringToJSON(text) : null;
 }
 
 export function newJSONStore(): JSONStore {

@@ -631,13 +631,22 @@ export namespace Net {
     readonly parser: (
       p1: FetchResponse,
       p2: ResourceStore<Resource>,
-    ) => Task.Result<Resource | null>;
+    ) => Promise<Resource | null>;
     readonly type: XMLHttpRequestResponseType;
 
     /**
      * @return resource for the given URL
      */
     load(
+      url: string,
+      opt_required?: boolean,
+      opt_message?: string,
+    ): Promise<Resource | null>;
+    /**
+     * Same as `load`, for the code that still uses Task/Result. The Result is
+     * available at once if the resource has already been loaded.
+     */
+    loadResult(
       url: string,
       opt_required?: boolean,
       opt_message?: string,

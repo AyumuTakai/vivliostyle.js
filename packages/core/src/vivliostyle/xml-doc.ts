@@ -21,7 +21,6 @@
  */
 import * as Base from "./base";
 import * as Net from "./net";
-import * as Task from "./task";
 import { XmlDoc } from "./types";
 
 export type XMLDocStore = XmlDoc.XMLDocStore;
@@ -357,10 +356,10 @@ export function resolveContentType(response: Net.FetchResponse): string | null {
   return null;
 }
 
-export function parseXMLResource(
+export async function parseXMLResource(
   response: Net.FetchResponse,
   store: XMLDocStore,
-): Task.Result<XmlDoc.XMLDocHolder | null> {
+): Promise<XmlDoc.XMLDocHolder | null> {
   let doc: Document | null = response.responseXML;
   if (!doc) {
     const parser = new DOMParser();
@@ -406,8 +405,7 @@ export function parseXMLResource(
       }
     }
   }
-  const xmldoc = doc ? new XMLDocHolder(store, response.url, doc) : null;
-  return Task.newResult(xmldoc);
+  return doc ? new XMLDocHolder(store, response.url, doc) : null;
 }
 
 export function newXMLDocStore(): XMLDocStore {

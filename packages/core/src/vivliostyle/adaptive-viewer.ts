@@ -265,7 +265,7 @@ export class AdaptiveViewer {
             this.window.location.href,
           );
           this.packageURL = [pubURL];
-          store.loadPubDoc(pubURL).then((opf) => {
+          fromPromise(store.loadPubDoc(pubURL), "loadPubDoc").then((opf) => {
             if (opf) {
               this.opf = opf;
               this.loadCmykReserveMap(store).then(() => {
@@ -313,16 +313,17 @@ export class AdaptiveViewer {
             }),
           );
           this.packageURL = resolvedParams.map((p) => p.url);
-          Epub.OPFDoc.fromChapters(store, "", resolvedParams, doc).then(
-            (opf) => {
-              this.opf = opf;
-              this.loadCmykReserveMap(store).then(() => {
-                this.render(fragment).then(() => {
-                  frame.finish(true);
-                });
+          fromPromise(
+            Epub.OPFDoc.fromChapters(store, "", resolvedParams, doc),
+            "fromChapters",
+          ).then((opf) => {
+            this.opf = opf;
+            this.loadCmykReserveMap(store).then(() => {
+              this.render(fragment).then(() => {
+                frame.finish(true);
               });
-            },
-          );
+            });
+          });
         },
       );
     });
@@ -842,7 +843,7 @@ export class AdaptiveViewer {
       Base.baseURL,
     );
     const frame: Task.Frame<boolean> = Task.newFrame("loadCmykReserveMap");
-    store.loadAsJSON(resolvedUrl).then((data) => {
+    fromPromise(store.loadAsJSON(resolvedUrl), "loadAsJSON").then((data) => {
       if (CmykStore.isValidCmykReserveMap(data)) {
         this.cmykReserveMap = data;
       } else {

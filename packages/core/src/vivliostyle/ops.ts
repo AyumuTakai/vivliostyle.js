@@ -128,8 +128,7 @@ class CounterStyleParserHandler extends CssCascade.PropSetParserHandler {
 }
 
 export class Style {
-  fontDeobfuscator:
-    ((p1: string) => ((p1: Blob) => Task.Result<Blob>) | null) | null;
+  fontDeobfuscator: Font.DeobfuscatorFactory | null;
   validatorSet: CssValidator.ValidatorSet;
 
   constructor(
@@ -3703,7 +3702,7 @@ function toStyleSource(
 export function parseOPSResource(
   response: Net.FetchResponse,
   store: XmlDoc.XMLDocStore,
-): Task.Result<XmlDoc.XMLDocHolder | null> {
+): Promise<XmlDoc.XMLDocHolder | null> {
   return (store as OPSDocStore).parseOPSResource(response);
 }
 
@@ -3717,8 +3716,7 @@ export class OPSDocStore extends Net.ResourceStore<XmlDoc.XMLDocHolder> {
   protected triggerSingleDocumentPreprocessing: boolean = false;
 
   protected constructor(
-    public fontDeobfuscator:
-      ((p1: string) => ((p1: Blob) => Task.Result<Blob>) | null) | null,
+    public fontDeobfuscator: Font.DeobfuscatorFactory | null,
     authorStyleSheets: StyleSheetParam[] | null = null,
     userStyleSheets: StyleSheetParam[] | null = null,
   ) {
@@ -3767,207 +3765,196 @@ export class OPSDocStore extends Net.ResourceStore<XmlDoc.XMLDocHolder> {
     );
   }
 
-  parseOPSResource(
+  async parseOPSResource(
     response: Net.FetchResponse,
-  ): Task.Result<XmlDoc.XMLDocHolder | null> {
-    const frame: Task.Frame<XmlDoc.XMLDocHolder | null> =
-      Task.newFrame("OPSDocStore.load");
+  ): Promise<XmlDoc.XMLDocHolder | null> {
     const url = response.url;
 
     // Hack for TOCView.showTOC()
     const isTocBox = Base.isTocBoxURL(url);
 
-    XmlDoc.parseXMLResource(response, this).then(
-      (xmldoc: XmlDoc.XMLDocHolder | null) => {
-        if (!xmldoc) {
-          frame.finish(null);
-          return;
+    const xmldoc = (await XmlDoc.parseXMLResource(
+      response,
+      this,
+    )) as XmlDoc.XMLDocHolder | null;
+    if (!xmldoc) {
+      return null;
+    }
+    if (this.triggerSingleDocumentPreprocessing) {
+      const hooks: Plugin.PreProcessSingleDocumentHook[] =
+        Plugin.getHooksForName(Plugin.HOOKS.PREPROCESS_SINGLE_DOCUMENT);
+      for (let i = 0; i < hooks.length; i++) {
+        try {
+          hooks[i](xmldoc.document);
+        } catch (e) {
+          Logging.logger.warn("Error during single document preprocessing:", e);
         }
-        if (this.triggerSingleDocumentPreprocessing) {
-          const hooks: Plugin.PreProcessSingleDocumentHook[] =
-            Plugin.getHooksForName(Plugin.HOOKS.PREPROCESS_SINGLE_DOCUMENT);
-          for (let i = 0; i < hooks.length; i++) {
-            try {
-              hooks[i](xmldoc.document);
-            } catch (e) {
-              Logging.logger.warn(
-                "Error during single document preprocessing:",
-                e,
-              );
-            }
-          }
-        }
-        const triggers: Vtree.Trigger[] = [];
-        const triggerList = xmldoc.document.getElementsByTagNameNS(
-          Base.NS.epub,
-          "trigger",
-        );
-        for (let i = 0; i < triggerList.length; i++) {
-          const triggerElem = triggerList[i];
-          const observer = triggerElem.getAttributeNS(Base.NS.EV, "observer");
-          const event = triggerElem.getAttributeNS(Base.NS.EV, "event");
-          const action = triggerElem.getAttribute("action");
-          const ref = triggerElem.getAttribute("ref");
-          if (observer && event && action && ref) {
-            triggers.push({ observer, event, action, ref });
-          }
-        }
-        this.triggersByDocURL[url] = triggers;
-        const sources = [] as StyleSource[];
-        sources.push({
-          url: Base.resolveURL("user-agent-base.css", Base.resourceBaseURL),
-          text: UserAgentBaseCss,
-          flavor: CssParser.StylesheetFlavor.USER_AGENT,
-          classes: null,
-          media: null,
-        });
-        sources.push({
-          url: Base.resolveURL("user-agent-page.css", Base.resourceBaseURL),
-          text: UserAgentPageCss,
-          flavor: CssParser.StylesheetFlavor.USER_AGENT,
-          classes: null,
-          media: null,
-        });
-        sources.push({
-          url: Base.resolveURL(
-            "user-agent-counter-styles.css",
-            Base.resourceBaseURL,
-          ),
-          text: UserAgentCounterStylesCss,
-          flavor: CssParser.StylesheetFlavor.USER_AGENT,
-          classes: null,
-          media: null,
-        });
-        if (isTocBox) {
-          sources.push({
-            url: Base.resolveURL("user-agent-toc.css", Base.resourceBaseURL),
-            text: UserAgentTocCss,
-            flavor: CssParser.StylesheetFlavor.USER_AGENT,
-            classes: null,
-            media: null,
-          });
-        } else {
-          const elemList =
-            xmldoc.document.querySelectorAll("style, link, meta");
-          for (const elem of elemList) {
-            const ns = elem.namespaceURI;
-            const localName = elem.localName;
-            if (ns == Base.NS.XHTML) {
-              if (localName == "style") {
-                const classes = elem.getAttribute("class");
-                const media = elem.getAttribute("media");
-                const title = elem.getAttribute("title");
-                sources.push({
-                  url,
-                  text: elem.textContent,
-                  flavor: CssParser.StylesheetFlavor.AUTHOR,
-                  classes: title ? classes : null,
-                  media,
-                });
-              } else if (localName == "link") {
-                const href = elem.getAttribute("href");
-                const rel = elem.getAttribute("rel")?.split(/\s+/);
-                const classes = elem.getAttribute("class");
-                const media = elem.getAttribute("media");
-                if (
-                  href &&
-                  rel?.includes("stylesheet") &&
-                  (!rel.includes("alternate") || classes)
-                ) {
-                  const src = Base.resolveURL(href, url);
-                  const title = elem.getAttribute("title");
-                  sources.push({
-                    url: src,
-                    text: null,
-                    classes: title ? classes : null,
-                    media,
-                    flavor: CssParser.StylesheetFlavor.AUTHOR,
-                  });
-                }
-              } else if (
-                localName == "meta" &&
-                elem.getAttribute("name") == "viewport"
-              ) {
-                sources.push({
-                  url,
-                  text: this.processViewportMeta(elem),
-                  flavor: CssParser.StylesheetFlavor.AUTHOR,
-                  classes: null,
-                  media: null,
-                });
-              }
-            }
-          }
-          for (let i = 0; i < this.styleSheets.length; i++) {
-            sources.push(this.styleSheets[i]);
-          }
-        }
-        let key = "";
-        for (let i = 0; i < sources.length; i++) {
-          key += sources[i].url;
-          key += "^";
-          if (sources[i].text) {
-            key += sources[i].text;
-          }
-          key += "^";
-        }
-        let style = this.styleByKey[key];
-        if (style) {
-          this.styleByDocURL[url] = style;
-          frame.finish(xmldoc);
-          return;
-        }
-        let fetcher = this.styleFetcherByKey[key];
-        if (!fetcher) {
-          fetcher = new TaskUtil.Fetcher<Style>(async () => {
-            const sph = new StyleParserHandler(this.validatorSet);
-            for (const source of sources) {
-              sph.startStylesheet(source.flavor);
-              if (source.text != null) {
-                await CssParser.parseStylesheetFromText(
-                  source.text,
-                  sph,
-                  source.url,
-                  source.classes,
-                  source.media,
-                );
-              } else {
-                await CssParser.parseStylesheetFromURL(
-                  source.url,
-                  sph,
-                  source.classes,
-                  source.media,
-                );
-              }
-            }
-            const cascade = sph.cascadeParserHandler.finish();
-            style = new Style(
-              this,
-              sph.rootScope,
-              sph.pageScope,
-              cascade,
-              sph.rootBox,
-              sortFontFaces(sph.fontFaces),
-              sph.footnoteProps,
-              sph.flowProps,
-              sph.viewportProps,
-              sph.pageProps,
-              sph.counterStyles,
-            );
-            this.styleByKey[key] = style;
-            delete this.styleFetcherByKey[key];
-            return style;
-          }, `FetchStylesheet ${url}`);
-          this.styleFetcherByKey[key] = fetcher;
-          fetcher.start();
-        }
-        fetcherResult(fetcher).then((style) => {
-          this.styleByDocURL[url] = style;
-          frame.finish(xmldoc);
-        });
-      },
+      }
+    }
+    const triggers: Vtree.Trigger[] = [];
+    const triggerList = xmldoc.document.getElementsByTagNameNS(
+      Base.NS.epub,
+      "trigger",
     );
-    return frame.result();
+    for (let i = 0; i < triggerList.length; i++) {
+      const triggerElem = triggerList[i];
+      const observer = triggerElem.getAttributeNS(Base.NS.EV, "observer");
+      const event = triggerElem.getAttributeNS(Base.NS.EV, "event");
+      const action = triggerElem.getAttribute("action");
+      const ref = triggerElem.getAttribute("ref");
+      if (observer && event && action && ref) {
+        triggers.push({ observer, event, action, ref });
+      }
+    }
+    this.triggersByDocURL[url] = triggers;
+    const sources = [] as StyleSource[];
+    sources.push({
+      url: Base.resolveURL("user-agent-base.css", Base.resourceBaseURL),
+      text: UserAgentBaseCss,
+      flavor: CssParser.StylesheetFlavor.USER_AGENT,
+      classes: null,
+      media: null,
+    });
+    sources.push({
+      url: Base.resolveURL("user-agent-page.css", Base.resourceBaseURL),
+      text: UserAgentPageCss,
+      flavor: CssParser.StylesheetFlavor.USER_AGENT,
+      classes: null,
+      media: null,
+    });
+    sources.push({
+      url: Base.resolveURL(
+        "user-agent-counter-styles.css",
+        Base.resourceBaseURL,
+      ),
+      text: UserAgentCounterStylesCss,
+      flavor: CssParser.StylesheetFlavor.USER_AGENT,
+      classes: null,
+      media: null,
+    });
+    if (isTocBox) {
+      sources.push({
+        url: Base.resolveURL("user-agent-toc.css", Base.resourceBaseURL),
+        text: UserAgentTocCss,
+        flavor: CssParser.StylesheetFlavor.USER_AGENT,
+        classes: null,
+        media: null,
+      });
+    } else {
+      const elemList = xmldoc.document.querySelectorAll("style, link, meta");
+      for (const elem of elemList) {
+        const ns = elem.namespaceURI;
+        const localName = elem.localName;
+        if (ns == Base.NS.XHTML) {
+          if (localName == "style") {
+            const classes = elem.getAttribute("class");
+            const media = elem.getAttribute("media");
+            const title = elem.getAttribute("title");
+            sources.push({
+              url,
+              text: elem.textContent,
+              flavor: CssParser.StylesheetFlavor.AUTHOR,
+              classes: title ? classes : null,
+              media,
+            });
+          } else if (localName == "link") {
+            const href = elem.getAttribute("href");
+            const rel = elem.getAttribute("rel")?.split(/\s+/);
+            const classes = elem.getAttribute("class");
+            const media = elem.getAttribute("media");
+            if (
+              href &&
+              rel?.includes("stylesheet") &&
+              (!rel.includes("alternate") || classes)
+            ) {
+              const src = Base.resolveURL(href, url);
+              const title = elem.getAttribute("title");
+              sources.push({
+                url: src,
+                text: null,
+                classes: title ? classes : null,
+                media,
+                flavor: CssParser.StylesheetFlavor.AUTHOR,
+              });
+            }
+          } else if (
+            localName == "meta" &&
+            elem.getAttribute("name") == "viewport"
+          ) {
+            sources.push({
+              url,
+              text: this.processViewportMeta(elem),
+              flavor: CssParser.StylesheetFlavor.AUTHOR,
+              classes: null,
+              media: null,
+            });
+          }
+        }
+      }
+      for (let i = 0; i < this.styleSheets.length; i++) {
+        sources.push(this.styleSheets[i]);
+      }
+    }
+    let key = "";
+    for (let i = 0; i < sources.length; i++) {
+      key += sources[i].url;
+      key += "^";
+      if (sources[i].text) {
+        key += sources[i].text;
+      }
+      key += "^";
+    }
+    let style = this.styleByKey[key];
+    if (style) {
+      this.styleByDocURL[url] = style;
+      return xmldoc;
+    }
+    let fetcher = this.styleFetcherByKey[key];
+    if (!fetcher) {
+      fetcher = new TaskUtil.Fetcher<Style>(async () => {
+        const sph = new StyleParserHandler(this.validatorSet);
+        for (const source of sources) {
+          sph.startStylesheet(source.flavor);
+          if (source.text != null) {
+            await CssParser.parseStylesheetFromText(
+              source.text,
+              sph,
+              source.url,
+              source.classes,
+              source.media,
+            );
+          } else {
+            await CssParser.parseStylesheetFromURL(
+              source.url,
+              sph,
+              source.classes,
+              source.media,
+            );
+          }
+        }
+        const cascade = sph.cascadeParserHandler.finish();
+        style = new Style(
+          this,
+          sph.rootScope,
+          sph.pageScope,
+          cascade,
+          sph.rootBox,
+          sortFontFaces(sph.fontFaces),
+          sph.footnoteProps,
+          sph.flowProps,
+          sph.viewportProps,
+          sph.pageProps,
+          sph.counterStyles,
+        );
+        this.styleByKey[key] = style;
+        delete this.styleFetcherByKey[key];
+        return style;
+      }, `FetchStylesheet ${url}`);
+      this.styleFetcherByKey[key] = fetcher;
+      fetcher.start();
+    }
+    this.styleByDocURL[url] = await fetcher.get();
+    return xmldoc;
   }
 
   processViewportMeta(meta: Element): string {
