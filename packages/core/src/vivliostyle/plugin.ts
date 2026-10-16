@@ -21,7 +21,6 @@ import * as Base from "./base";
 import * as Css from "./css";
 import * as LayoutProcessor from "./layout-processor";
 import * as Logging from "./logging";
-import * as Task from "./task";
 import { Layout, Vtree } from "./types";
 
 /**
@@ -61,9 +60,9 @@ export enum HOOKS {
    *   {Vtree.NodeContext} nodeContext
    *   {string} sourceTextContent
    *
-   * Functions called by this hook are expected to return a
-   * Task.Result.<string>. The text content is then replaced by the
-   * returned value.
+   * Functions called by this hook are expected to return the new text
+   * content (a string, or a Promise of it). The text content is then replaced
+   * by the returned value.
    */
   PREPROCESS_TEXT_CONTENT = "PREPROCESS_TEXT_CONTENT",
 
@@ -154,7 +153,7 @@ export type PreProcessSingleDocumentHook = (p1: Document) => any;
 export type PreProcessTextContentHook = (
   p1: Vtree.NodeContext,
   p2: string,
-) => Task.Result<string>;
+) => PromiseLike<string> | string;
 
 export type PreProcessElementStyleHook = (
   p1: Vtree.NodeContext,

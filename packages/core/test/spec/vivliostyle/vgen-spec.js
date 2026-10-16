@@ -18,10 +18,72 @@
 import * as CssCascade from "../../../src/vivliostyle/css-cascade";
 import * as CssParser from "../../../src/vivliostyle/css-parser";
 import * as CssTokenizer from "../../../src/vivliostyle/css-tokenizer";
+import * as Diff from "../../../src/vivliostyle/diff";
 import * as Exprs from "../../../src/vivliostyle/exprs";
+import * as Plugin from "../../../src/vivliostyle/plugin";
+import * as Task from "../../../src/vivliostyle/task";
 import * as Vgen from "../../../src/vivliostyle/vgen";
 
 describe("vgen", function () {
+  describe("preprocessTextContent", function () {
+    const hooks = [];
+    afterEach(function () {
+      while (hooks.length) {
+        Plugin.removeHook(Plugin.HOOKS.PREPROCESS_TEXT_CONTENT, hooks.pop());
+      }
+    });
+    function register(hook) {
+      hooks.push(hook);
+      Plugin.registerHook(Plugin.HOOKS.PREPROCESS_TEXT_CONTENT, hook);
+    }
+    function createNodeContext(text) {
+      return {
+        sourceNode: { textContent: text },
+        preprocessedTextContent: null,
+      };
+    }
+
+    it("applies the hooks in order, whether they return a string or a Promise", async function () {
+      const factory = Object.create(Vgen.ViewFactory.prototype);
+      register((nodeContext, text) => text + "A");
+      register(async (nodeContext, text) => text + "B");
+      register(
+        (nodeContext, text) =>
+          new Promise((resolve) => setTimeout(() => resolve(text + "C"), 5)),
+      );
+      const nodeContext = createNodeContext("x");
+
+      const changes = await factory.preprocessTextContent(nodeContext);
+
+      expect(Diff.restoreNewText(changes)).toBe("xABC");
+      expect(nodeContext.preprocessedTextContent).toBe(changes);
+    });
+
+    it("accepts the result of a legacy task", async function () {
+      const factory = Object.create(Vgen.ViewFactory.prototype);
+      register((nodeContext, text) => Task.newResult(text + "T"));
+
+      const changes = await factory.preprocessTextContent(
+        createNodeContext("y"),
+      );
+
+      expect(Diff.restoreNewText(changes)).toBe("yT");
+    });
+
+    it("returns the text that was already preprocessed", async function () {
+      const factory = Object.create(Vgen.ViewFactory.prototype);
+      const hook = jasmine.createSpy("hook").and.returnValue("z");
+      register(hook);
+      const nodeContext = createNodeContext("y");
+      nodeContext.preprocessedTextContent = [];
+
+      const changes = await factory.preprocessTextContent(nodeContext);
+
+      expect(changes).toBe(nodeContext.preprocessedTextContent);
+      expect(hook).not.toHaveBeenCalled();
+    });
+  });
+
   describe("inheritFromSourceParent", function () {
     function inherit(fontSize, lineHeight) {
       const scope = new Exprs.LexicalScope(null);

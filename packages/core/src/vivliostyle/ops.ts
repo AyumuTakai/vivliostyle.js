@@ -2344,6 +2344,7 @@ export class StyleInstance
       this.semanticFootnoteFirstRefOffsets,
       this.semanticFootnoteFirstRefOffsetsInitialized,
     );
+    layoutContext.signal = this.layoutSignal;
     let columnIndex = 0;
     let column: LayoutType.Column | null = null;
     let columns: LayoutType.Column[] = [];

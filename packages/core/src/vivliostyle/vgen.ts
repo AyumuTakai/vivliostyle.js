@@ -45,7 +45,7 @@ import * as Scripts from "./scripts";
 import * as SemanticFootnote from "./semantic-footnote";
 import * as Task from "./task";
 import * as TaskUtil from "./task-util";
-import { fromPromise, waitForFetchersResult } from "./task-bridge";
+import { fromPromise } from "./task-bridge";
 import * as Urls from "./urls";
 import * as Vtree from "./vtree";
 import * as Layout from "./layout";
@@ -204,6 +204,9 @@ export class ViewFactory
   // TODO: only set it on NodeContext
   viewNode: Element | Text | null = null;
 
+  /** Stops the work that is going on when aborted (see StyleInstance). */
+  signal: AbortSignal | undefined;
+
   constructor(
     public readonly flowName: string,
     public readonly context: Exprs.Context,
@@ -235,7 +238,7 @@ export class ViewFactory
 
   /** @override */
   clone(): Vtree.LayoutContext {
-    return new ViewFactory(
+    const clone = new ViewFactory(
       this.flowName,
       this.context,
       this.viewport,
@@ -254,6 +257,8 @@ export class ViewFactory
       this.semanticFootnoteFirstRefOffsets,
       this.semanticFootnoteFirstRefOffsetsInitialized,
     );
+    clone.signal = this.signal;
+    return clone;
   }
 
   private getExplicitPageType(
@@ -596,38 +601,33 @@ export class ViewFactory
     return computedPseudoStyleMap;
   }
 
-  createRefShadow(
+  async createRefShadow(
     href: string,
     type: Vtree.ShadowType,
     element: Element,
     parentShadow: Vtree.ShadowContext | null,
     subShadow: Vtree.ShadowContext | null,
-  ): Task.Result<Vtree.ShadowContext | null> {
-    const frame: Task.Frame<Vtree.ShadowContext | null> =
-      Task.newFrame("createRefShadow");
-    this.xmldoc.store.loadResult(href).then((refDocParam) => {
-      const refDoc = refDocParam;
-      if (refDoc) {
-        const refElement = refDoc.getElement(href);
-        if (refElement) {
-          const refStyler = this.stylerProducer.getStylerForDoc(refDoc);
-          subShadow = new Vtree.ShadowContext(
-            element,
-            refElement,
-            refDoc,
-            parentShadow,
-            subShadow,
-            type,
-            refStyler,
-          );
-        }
+  ): Promise<Vtree.ShadowContext | null> {
+    const refDoc = await this.xmldoc.store.load(href);
+    if (refDoc) {
+      const refElement = refDoc.getElement(href);
+      if (refElement) {
+        const refStyler = this.stylerProducer.getStylerForDoc(refDoc);
+        subShadow = new Vtree.ShadowContext(
+          element,
+          refElement,
+          refDoc,
+          parentShadow,
+          subShadow,
+          type,
+          refStyler,
+        );
       }
-      frame.finish(subShadow);
-    });
-    return frame.result();
+    }
+    return subShadow;
   }
 
-  createShadows(
+  async createShadows(
     nodeContext: Vtree.NodeContext,
     element: Element,
     isRoot: boolean,
@@ -636,108 +636,84 @@ export class ViewFactory
     styler: CssStyler.AbstractStyler,
     context: Exprs.Context,
     shadowContext: Vtree.ShadowContext | null,
-  ): Task.Result<Vtree.ShadowContext | null> {
-    const frame: Task.Frame<Vtree.ShadowContext | null> =
-      Task.newFrame("createShadows");
-    const shadow: Vtree.ShadowContext | null = null;
+  ): Promise<Vtree.ShadowContext | null> {
+    let shadow: Vtree.ShadowContext | null = null;
     const templateURLVal = computedStyle["template"];
-    let cont: Task.Result<Vtree.ShadowContext | null>;
     if (
-      templateURLVal instanceof Css.URL ||
-      templateURLVal === Css.ident.footnote
-    ) {
-      if (
-        templateURLVal !== Css.ident.footnote ||
+      (templateURLVal instanceof Css.URL ||
+        templateURLVal === Css.ident.footnote) &&
+      (templateURLVal !== Css.ident.footnote ||
         SemanticFootnote.shouldGenerateSemanticFootnote(
           element,
           this.xmldoc.url,
           (noteref) => this.xmldoc.getElementOffset(noteref),
           this.semanticFootnoteFirstRefOffsets,
           this.semanticFootnoteFirstRefOffsetsInitialized,
-        )
-      ) {
-        const url =
-          templateURLVal instanceof Css.URL
-            ? templateURLVal.url
-            : Base.resolveURL("user-agent.xml#footnote", Base.resourceBaseURL);
-        cont = this.createRefShadow(
-          url,
-          Vtree.ShadowType.ROOTLESS,
+        ))
+    ) {
+      const url =
+        templateURLVal instanceof Css.URL
+          ? templateURLVal.url
+          : Base.resolveURL("user-agent.xml#footnote", Base.resourceBaseURL);
+      shadow = await this.createRefShadow(
+        url,
+        Vtree.ShadowType.ROOTLESS,
+        element,
+        shadowContext,
+        shadow,
+      );
+    }
+    if (
+      element.namespaceURI == Base.NS.SHADOW &&
+      element.localName == "include"
+    ) {
+      let href = element.getAttribute("href");
+      let xmldoc: XmlDoc.XMLDocHolder = this.xmldoc;
+      if (href) {
+        xmldoc = shadowContext?.xmldoc ?? this.xmldoc;
+      } else if (shadowContext) {
+        if (shadowContext.owner.namespaceURI == Base.NS.XHTML) {
+          href = shadowContext.owner.getAttribute("href");
+        } else {
+          href = shadowContext.owner.getAttributeNS(Base.NS.XLINK, "href");
+        }
+        xmldoc = shadowContext.parentShadow?.xmldoc ?? this.xmldoc;
+      }
+      if (href) {
+        href = Base.resolveReferenceURL(href, xmldoc.url);
+        shadow = await this.createRefShadow(
+          href,
+          Vtree.ShadowType.ROOTED,
           element,
           shadowContext,
           shadow,
         );
-      } else {
-        cont = Task.newResult(shadow);
       }
-    } else {
-      cont = Task.newResult(shadow);
     }
-    cont.then((shadow) => {
-      let cont1: Task.Result<Vtree.ShadowContext | null> | null = null;
-      if (element.namespaceURI == Base.NS.SHADOW) {
-        if (element.localName == "include") {
-          let href = element.getAttribute("href");
-          let xmldoc: XmlDoc.XMLDocHolder = this.xmldoc;
-          if (href) {
-            xmldoc = shadowContext?.xmldoc ?? this.xmldoc;
-          } else if (shadowContext) {
-            if (shadowContext.owner.namespaceURI == Base.NS.XHTML) {
-              href = shadowContext.owner.getAttribute("href");
-            } else {
-              href = shadowContext.owner.getAttributeNS(Base.NS.XLINK, "href");
-            }
-            xmldoc = shadowContext.parentShadow?.xmldoc ?? this.xmldoc;
-          }
-          if (href) {
-            href = Base.resolveReferenceURL(href, xmldoc.url);
-            cont1 = this.createRefShadow(
-              href,
-              Vtree.ShadowType.ROOTED,
-              element,
-              shadowContext,
-              shadow,
-            );
-          }
-        }
-      }
-      if (cont1 == null) {
-        cont1 = Task.newResult(shadow);
-      }
-      let cont2: Task.Result<Vtree.ShadowContext | null> | null = null;
-      cont1.then((shadow) => {
-        if (computedStyle["display"] === Css.ident.table_cell) {
-          const url = Base.resolveURL(
-            "user-agent.xml#table-cell",
-            Base.resourceBaseURL,
-          );
-          cont2 = this.createRefShadow(
-            url,
-            Vtree.ShadowType.ROOTLESS,
-            element,
-            shadowContext,
-            shadow,
-          );
-        } else {
-          cont2 = Task.newResult(shadow);
-        }
-        cont2.then((shadow) => {
-          shadow = this.createPseudoelementShadow(
-            nodeContext,
-            element,
-            isRoot,
-            cascStyle,
-            computedStyle,
-            styler,
-            context,
-            shadowContext,
-            shadow,
-          );
-          frame.finish(shadow);
-        });
-      });
-    });
-    return frame.result();
+    if (computedStyle["display"] === Css.ident.table_cell) {
+      const url = Base.resolveURL(
+        "user-agent.xml#table-cell",
+        Base.resourceBaseURL,
+      );
+      shadow = await this.createRefShadow(
+        url,
+        Vtree.ShadowType.ROOTLESS,
+        element,
+        shadowContext,
+        shadow,
+      );
+    }
+    return this.createPseudoelementShadow(
+      nodeContext,
+      element,
+      isRoot,
+      cascStyle,
+      computedStyle,
+      styler,
+      context,
+      shadowContext,
+      shadow,
+    );
   }
 
   /** @override */
@@ -1348,7 +1324,8 @@ export class ViewFactory
     }
     if (currentDeclaresFontSize && !fontSizeFromOwnStyle) {
       const inheritedFontSize = props["font-size"] as
-        CssCascade.CascadeValue | undefined;
+        | CssCascade.CascadeValue
+        | undefined;
       // The font size comes from a declaration that is not in the element's
       // own cascaded style, e.g. a region rule such as
       // `aside[role="doc-footnote"]:footnote-content { font-size: 0.9em }`.
@@ -1369,7 +1346,8 @@ export class ViewFactory
     }
     if (currentDeclaresLineHeight && !lineHeightFromOwnStyle) {
       const inheritedLineHeight = props["line-height"] as
-        CssCascade.CascadeValue | undefined;
+        | CssCascade.CascadeValue
+        | undefined;
       // A line height that uses the `lh` unit needs the inherited line height to
       // resolve the unit, but when the declaration comes from outside the
       // element's own cascaded style, e.g. a region rule such as
@@ -1388,7 +1366,8 @@ export class ViewFactory
     }
     if (currentHasRelativeFontWeight && !fontWeightFromOwnStyle) {
       const inheritedFontWeight = props["font-weight"] as
-        CssCascade.CascadeValue | undefined;
+        | CssCascade.CascadeValue
+        | undefined;
       // Likewise for a relative font weight (`bolder`/`lighter`) that comes
       // from a declaration outside the element's own cascaded style, e.g.
       // `aside[role="doc-footnote"]:footnote-content { font-weight: lighter }`.
@@ -1507,12 +1486,11 @@ export class ViewFactory
   /**
    * @return holding true if children should be processed
    */
-  private createElementView(
+  private async createElementView(
     nodeContext: Vtree.NodeContext,
     firstTime: boolean,
-  ): Task.Result<boolean> {
+  ): Promise<boolean> {
     let needToProcessChildren = true;
-    const frame: Task.Frame<boolean> = Task.newFrame("createElementView");
 
     // Figure out element's styles
     let element = this.sourceNode as Element;
@@ -1633,19 +1611,17 @@ export class ViewFactory
     const flow = computedStyle["flow-into"];
     if (flow && flow.toString() != this.flowName) {
       // foreign flow, don't create a view
-      frame.finish(false);
-      return frame.result();
+      return false;
     }
     if (
       Scripts.allowScripts &&
       element.localName === "script" &&
       element.namespaceURI === Base.NS.XHTML
     ) {
-      fromPromise(
-        Scripts.loadScript(element as HTMLScriptElement, this.viewport.window),
-        "loadScript",
-      ).thenFinish(frame);
-      return frame.result();
+      return Scripts.loadScript(
+        element as HTMLScriptElement,
+        this.viewport.window,
+      );
     }
 
     let display: Css.Val | null | undefined = computedStyle["display"];
@@ -1671,8 +1647,7 @@ export class ViewFactory
     }
     if (display === Css.ident.none) {
       // no content
-      frame.finish(false);
-      return frame.result();
+      return false;
     }
     const isRoot = nodeContext.parent == null;
     const blockSize = computedStyle[nodeContext.vertical ? "width" : "height"];
@@ -1685,7 +1660,7 @@ export class ViewFactory
       !(blockSize === Css.ident.auto || Css.isDefaultingValue(blockSize));
     nodeContext.flexContainer =
       display === Css.ident.flex || isFixedSizeGridContainer;
-    this.createShadows(
+    const shadowParam = await this.createShadows(
       nodeContext,
       element,
       isRoot,
@@ -1694,7 +1669,8 @@ export class ViewFactory
       styler,
       this.context,
       nodeContext.shadowContext,
-    ).then((shadowParam) => {
+    );
+    {
       nodeContext.nodeShadow = shadowParam;
       const position = computedStyle["position"] as Css.Ident;
       let floatSide: Css.Val | null = computedStyle["float"];
@@ -2195,19 +2171,18 @@ export class ViewFactory
       ) {
         custom = true;
       }
-      let elemResult: Task.Result<Element | null>;
+      let result: Element | null = null;
       if (custom) {
         const parentNode = nodeContext.parent
           ? nodeContext.parent.viewNode
           : null;
-        elemResult = fromPromise(
-          this.customRenderer(element, parentNode as Element, computedStyle),
-          "customRenderer",
+        result = await this.customRenderer(
+          element,
+          parentNode as Element,
+          computedStyle,
         );
-      } else {
-        elemResult = Task.newResult(null);
       }
-      elemResult.then((result) => {
+      {
         if (result) {
           if (custom) {
             needToProcessChildren =
@@ -2216,8 +2191,7 @@ export class ViewFactory
         } else if (computedStyle["display"] === Css.ident.none) {
           // No element should be created if display:none is set.
           // (Fix issue #924)
-          frame.finish(false);
-          return;
+          return false;
         } else {
           result = this.createElement(ns, tag);
         }
@@ -2705,25 +2679,22 @@ export class ViewFactory
 
         this.viewNode = result;
         if (fetchers.length) {
-          waitForFetchersResult(fetchers).then(() => {
-            if (imageResolution !== undefined && imageResolution > 0) {
-              this.modifyElemDimensionWithImageResolution(
-                images,
-                imageResolution,
-                computedStyle,
-                nodeContext.vertical,
-              );
-            }
-            frame.finish(needToProcessChildren);
-          });
+          await TaskUtil.waitForFetchers(fetchers);
+          if (imageResolution !== undefined && imageResolution > 0) {
+            this.modifyElemDimensionWithImageResolution(
+              images,
+              imageResolution,
+              computedStyle,
+              nodeContext.vertical,
+            );
+          }
         } else {
-          frame.timeSlice().then(() => {
-            frame.finish(needToProcessChildren);
-          });
+          await TaskUtil.timeSlice();
         }
-      });
-    });
-    return frame.result();
+        this.signal?.throwIfAborted();
+        return needToProcessChildren;
+      }
+    }
   }
 
   /**
@@ -3114,120 +3085,96 @@ export class ViewFactory
     return null;
   }
 
-  private createTextNodeView(
+  private async createTextNodeView(
     nodeContext: Vtree.NodeContext,
-  ): Task.Result<boolean> {
-    const frame: Task.Frame<boolean> = Task.newFrame("createTextNodeView");
-    this.preprocessTextContent(nodeContext).then((preprocessedTextContent) => {
-      const offsetInNode = this.offsetInNode || 0;
-      const textContent = Diff.restoreNewText(preprocessedTextContent).slice(
-        offsetInNode,
-      );
-      this.viewNode = document.createTextNode(textContent);
-      frame.finish(true);
-    });
-    return frame.result();
+  ): Promise<boolean> {
+    const preprocessedTextContent =
+      await this.preprocessTextContent(nodeContext);
+    const offsetInNode = this.offsetInNode || 0;
+    const textContent = Diff.restoreNewText(preprocessedTextContent).slice(
+      offsetInNode,
+    );
+    this.viewNode = document.createTextNode(textContent);
+    return true;
   }
 
-  private preprocessTextContent(
+  private async preprocessTextContent(
     nodeContext: Vtree.NodeContext,
-  ): Task.Result<Diff.Change[]> {
+  ): Promise<Diff.Change[]> {
     if (nodeContext.preprocessedTextContent != null) {
-      return Task.newResult(nodeContext.preprocessedTextContent);
+      return nodeContext.preprocessedTextContent;
     }
-    let originl: string;
-    let textContent = (originl = nodeContext.sourceNode.textContent ?? "");
-    const frame: Task.Frame<Diff.Change[]> = Task.newFrame(
-      "preprocessTextContent",
-    );
+    const original = nodeContext.sourceNode.textContent ?? "";
+    let textContent = original;
     const hooks: Plugin.PreProcessTextContentHook[] = Plugin.getHooksForName(
       Plugin.HOOKS.PREPROCESS_TEXT_CONTENT,
     );
-    let index = 0;
-    frame
-      .loop(() => {
-        if (index >= hooks.length) {
-          return Task.newResult(false);
-        }
-        return hooks[index++](nodeContext, textContent).thenAsync(
-          (processedText) => {
-            textContent = processedText;
-            return Task.newResult(true);
-          },
-        );
-      })
-      .then(() => {
-        const preprocessedTextContent = Diff.diffChars(originl, textContent);
-        nodeContext.preprocessedTextContent = preprocessedTextContent;
-        frame.finish(preprocessedTextContent);
-      });
-    return frame.result();
+    for (const hook of hooks) {
+      textContent = await hook(nodeContext, textContent);
+    }
+    const preprocessedTextContent = Diff.diffChars(original, textContent);
+    nodeContext.preprocessedTextContent = preprocessedTextContent;
+    return preprocessedTextContent;
   }
 
   /**
    * @return holding true if children should be processed
    */
-  createNodeView(
+  async createNodeView(
     nodeContext: Vtree.NodeContext,
     firstTime: boolean,
-  ): Task.Result<boolean> {
-    const frame: Task.Frame<boolean> = Task.newFrame("createNodeView");
-    let result: Task.Result<boolean>;
+  ): Promise<boolean> {
     let needToProcessChildren = true;
     if (nodeContext.sourceNode.nodeType == 1) {
-      result = this.createElementView(nodeContext, firstTime);
+      needToProcessChildren = await this.createElementView(
+        nodeContext,
+        firstTime,
+      );
+    } else if (nodeContext.sourceNode.nodeType == 8) {
+      this.viewNode = null; // comment node
     } else {
-      if (nodeContext.sourceNode.nodeType == 8) {
-        this.viewNode = null; // comment node
-        result = Task.newResult(true);
-      } else {
-        result = this.createTextNodeView(nodeContext);
+      needToProcessChildren = await this.createTextNodeView(nodeContext);
+    }
+    nodeContext.viewNode = this.viewNode;
+    if (this.viewNode) {
+      const isPseudo = (node: Node | null, name: string): boolean =>
+        node?.nodeType === 1 &&
+        PseudoElement.getPseudoName(node as Element) === name;
+      const p = nodeContext.parent;
+      // A first-letter pseudo-element view is only generated below its
+      // originating element's context, so a context bearing one has a parent.
+      const pFirstLetter =
+        p &&
+        isPseudo(this.viewNode, "after") &&
+        isPseudo(p.viewNode, "first-letter")
+          ? (p as Vtree.ChildNodeContext)
+          : null;
+      let parent = p
+        ? pFirstLetter?.viewNode?.hasChildNodes()
+          ? (pFirstLetter.parent.viewNode as Element) // Fix for issue #1175
+          : (p.viewNode as Element)
+        : this.viewRoot;
+      if (nodeContext.pluginProps["nestedFootnoteDetached"]) {
+        // Nested footnote, attach to the root (Issue #1352)
+        parent = this.viewRoot;
+      }
+      if (parent) {
+        if (
+          nodeContext.inline &&
+          // ignore whitespace text node
+          !(this.viewNode.nodeType === 3 && Vtree.canIgnore(this.viewNode)) &&
+          !parent.hasChildNodes() &&
+          Break.getBoxBreakFlags(parent).includes("block-start")
+        ) {
+          Break.setBoxBreakFlag(parent, "text-start");
+        }
+        parent.appendChild(this.viewNode);
+
+        // Fix overflow caused by forced column breaks
+        LayoutHelper.fixOverflowAtForcedColumnBreak(this.viewNode);
       }
     }
-    result.then((processChildren) => {
-      needToProcessChildren = processChildren;
-      nodeContext.viewNode = this.viewNode;
-      if (this.viewNode) {
-        const isPseudo = (node: Node | null, name: string): boolean =>
-          node?.nodeType === 1 &&
-          PseudoElement.getPseudoName(node as Element) === name;
-        const p = nodeContext.parent;
-        // A first-letter pseudo-element view is only generated below its
-        // originating element's context, so a context bearing one has a parent.
-        const pFirstLetter =
-          p &&
-          isPseudo(this.viewNode, "after") &&
-          isPseudo(p.viewNode, "first-letter")
-            ? (p as Vtree.ChildNodeContext)
-            : null;
-        let parent = p
-          ? pFirstLetter?.viewNode?.hasChildNodes()
-            ? (pFirstLetter.parent.viewNode as Element) // Fix for issue #1175
-            : (p.viewNode as Element)
-          : this.viewRoot;
-        if (nodeContext.pluginProps["nestedFootnoteDetached"]) {
-          // Nested footnote, attach to the root (Issue #1352)
-          parent = this.viewRoot;
-        }
-        if (parent) {
-          if (
-            nodeContext.inline &&
-            // ignore whitespace text node
-            !(this.viewNode.nodeType === 3 && Vtree.canIgnore(this.viewNode)) &&
-            !parent.hasChildNodes() &&
-            Break.getBoxBreakFlags(parent).includes("block-start")
-          ) {
-            Break.setBoxBreakFlag(parent, "text-start");
-          }
-          parent.appendChild(this.viewNode);
-
-          // Fix overflow caused by forced column breaks
-          LayoutHelper.fixOverflowAtForcedColumnBreak(this.viewNode);
-        }
-      }
-      frame.finish(needToProcessChildren);
-    });
-    return frame.result();
+    return needToProcessChildren;
   }
 
   /** @override */
@@ -3236,6 +3183,17 @@ export class ViewFactory
     firstTime: boolean,
     atUnforcedBreak?: boolean,
   ): Task.Result<boolean> {
+    return fromPromise(
+      this.setCurrentAsync(nodeContext, firstTime, atUnforcedBreak),
+      "setCurrent",
+    );
+  }
+
+  private setCurrentAsync(
+    nodeContext: Vtree.NodeContext,
+    firstTime: boolean,
+    atUnforcedBreak?: boolean,
+  ): Promise<boolean> {
     this.nodeContext = nodeContext;
     this.sourceNode = nodeContext.sourceNode;
     this.offsetInNode = nodeContext.offsetInNode;
@@ -3425,12 +3383,9 @@ export class ViewFactory
    * then shadowSibling will lead to the footnote element.
    * (Issue #868)
    */
-  private insertFootnoteCall(
+  private async insertFootnoteCall(
     footnoteNodeContext: Vtree.NodeContext,
-  ): Task.Result<Vtree.NodeContext> {
-    const frame: Task.Frame<Vtree.NodeContext> =
-      Task.newFrame("insertFootnoteCall");
-
+  ): Promise<Vtree.NodeContext> {
     // Create a pseudo source node for footnote-call
     const footnoteCallSourceNode = PseudoElement.document.createElementNS(
       Base.NS.XHTML,
@@ -3490,27 +3445,25 @@ export class ViewFactory
     }
 
     // Now create the view for footnote-call
-    this.setCurrent(footnoteCallContext, true, false).then(
-      (processChildren) => {
-        // If processChildren is true and the source node has children (generated content),
-        // let the normal layout flow process them by NOT setting after=true.
-        // This ensures text-spacing polyfill is applied via postLayoutBlock.
-        if (processChildren && footnoteCallSourceNode.hasChildNodes()) {
-          // Return the footnote-call context as-is to process children
-          frame.finish(footnoteCallContext);
-        } else {
-          // No children to process, mark as done
-          const modified = footnoteCallContext.modify();
-          modified.after = true;
-          if (!footnoteCallContext.viewNode) {
-            modified.inline = true;
-          }
-          frame.finish(modified);
-        }
-      },
+    const processChildren = await this.setCurrentAsync(
+      footnoteCallContext,
+      true,
+      false,
     );
-
-    return frame.result();
+    // If processChildren is true and the source node has children (generated content),
+    // let the normal layout flow process them by NOT setting after=true.
+    // This ensures text-spacing polyfill is applied via postLayoutBlock.
+    if (processChildren && footnoteCallSourceNode.hasChildNodes()) {
+      // Return the footnote-call context as-is to process children
+      return footnoteCallContext;
+    }
+    // No children to process, mark as done
+    const modified = footnoteCallContext.modify();
+    modified.after = true;
+    if (!footnoteCallContext.viewNode) {
+      modified.inline = true;
+    }
+    return modified;
   }
 
   /** @override */
@@ -3518,87 +3471,91 @@ export class ViewFactory
     position: Vtree.NodeContext,
     atUnforcedBreak?: boolean,
   ): Task.Result<Vtree.NodeContext | null> {
-    const preprocessResult: Task.Result<Diff.Change[] | null> =
-      !position.after && position.sourceNode.nodeType != 1
-        ? this.preprocessTextContent(position)
-        : Task.newResult<Diff.Change[] | null>(null);
-    return preprocessResult.thenAsync((preprocessedTextContent) =>
-      this.nextInTreeWithPreprocessedText(
-        position,
-        preprocessedTextContent,
-        atUnforcedBreak,
-      ),
+    return fromPromise(
+      this.nextInTreeAsync(position, atUnforcedBreak),
+      "nextInTree",
     );
   }
 
-  private nextInTreeWithPreprocessedText(
+  private async nextInTreeAsync(
+    position: Vtree.NodeContext,
+    atUnforcedBreak?: boolean,
+  ): Promise<Vtree.NodeContext | null> {
+    const preprocessedTextContent =
+      !position.after && position.sourceNode.nodeType != 1
+        ? await this.preprocessTextContent(position)
+        : null;
+    return this.nextInTreeWithPreprocessedText(
+      position,
+      preprocessedTextContent,
+      atUnforcedBreak,
+    );
+  }
+
+  private async nextInTreeWithPreprocessedText(
     position: Vtree.NodeContext,
     preprocessedTextContent: Diff.Change[] | null,
     atUnforcedBreak?: boolean,
-  ): Task.Result<Vtree.NodeContext | null> {
+  ): Promise<Vtree.NodeContext | null> {
     const nextPosition = this.nextPositionInTree(
       position,
       preprocessedTextContent,
     );
     if (!nextPosition || nextPosition.after) {
-      return Task.newResult<Vtree.NodeContext | null>(nextPosition);
+      return nextPosition;
     }
     this.syncTextNodePageTypeBoundary(nextPosition);
     let nodeContext = nextPosition;
-    const frame: Task.Frame<Vtree.NodeContext | null> =
-      Task.newFrame("nextInTree");
-    this.setCurrent(nodeContext, true, atUnforcedBreak).then(
-      (processChildren) => {
-        if (!nodeContext.viewNode || !processChildren) {
-          nodeContext = nodeContext.modify();
-          nodeContext.after = true; // skip
-          if (!nodeContext.viewNode) {
-            nodeContext.inline = true;
-          }
-        }
-
-        // Issue #868: Insert footnote-call before footnote element
-        // Only insert if footnote-call hasn't been processed yet for this footnote.
-        // Skip semantic EPUB/DPUB footnotes because the call already exists in
-        // source HTML as a noteref link (no extra ::footnote-call is needed).
-        // Also skip pseudo-elements (shadowContext exists) because they are not in the
-        // source document tree (PR #1607 follow-up fix).
-        if (
-          nodeContext.floatSide === "footnote" &&
-          !(this.isFootnote && !nodeContext.parent) &&
-          !nodeContext.after &&
-          !nodeContext.pluginProps["footnoteCallProcessed"] &&
-          !nodeContext.shadowContext &&
-          !this.isSemanticFootnoteElement(nodeContext)
-        ) {
-          const existingFootnoteCall =
-            this.findImmediateFootnoteCallSibling(nodeContext);
-          if (existingFootnoteCall?.parentNode) {
-            existingFootnoteCall.parentNode.removeChild(existingFootnoteCall);
-          }
-          if (this.isFootnote && nodeContext.parent) {
-            // Detach nested footnote content into footnote area while keeping
-            // the call marker in the parent footnote text. (Issue #1352)
-            nodeContext.pluginProps["nestedFootnoteDetached"] = 1;
-          }
-          // Mark as processed to avoid infinite loop when returning via shadowSibling
-          nodeContext.pluginProps["footnoteCallProcessed"] = 1;
-          // Return footnote-call first, footnote will be processed via shadowSibling
-          this.insertFootnoteCall(nodeContext).then((footnoteCallContext) => {
-            this.dispatchEvent({
-              type: "nextInTree",
-              nodeContext: footnoteCallContext,
-            } as any);
-            frame.finish(footnoteCallContext);
-          });
-          return;
-        }
-
-        this.dispatchEvent({ type: "nextInTree", nodeContext } as any);
-        frame.finish(nodeContext);
-      },
+    const processChildren = await this.setCurrentAsync(
+      nodeContext,
+      true,
+      atUnforcedBreak,
     );
-    return frame.result();
+    if (!nodeContext.viewNode || !processChildren) {
+      nodeContext = nodeContext.modify();
+      nodeContext.after = true; // skip
+      if (!nodeContext.viewNode) {
+        nodeContext.inline = true;
+      }
+    }
+
+    // Issue #868: Insert footnote-call before footnote element
+    // Only insert if footnote-call hasn't been processed yet for this footnote.
+    // Skip semantic EPUB/DPUB footnotes because the call already exists in
+    // source HTML as a noteref link (no extra ::footnote-call is needed).
+    // Also skip pseudo-elements (shadowContext exists) because they are not in the
+    // source document tree (PR #1607 follow-up fix).
+    if (
+      nodeContext.floatSide === "footnote" &&
+      !(this.isFootnote && !nodeContext.parent) &&
+      !nodeContext.after &&
+      !nodeContext.pluginProps["footnoteCallProcessed"] &&
+      !nodeContext.shadowContext &&
+      !this.isSemanticFootnoteElement(nodeContext)
+    ) {
+      const existingFootnoteCall =
+        this.findImmediateFootnoteCallSibling(nodeContext);
+      if (existingFootnoteCall?.parentNode) {
+        existingFootnoteCall.parentNode.removeChild(existingFootnoteCall);
+      }
+      if (this.isFootnote && nodeContext.parent) {
+        // Detach nested footnote content into footnote area while keeping
+        // the call marker in the parent footnote text. (Issue #1352)
+        nodeContext.pluginProps["nestedFootnoteDetached"] = 1;
+      }
+      // Mark as processed to avoid infinite loop when returning via shadowSibling
+      nodeContext.pluginProps["footnoteCallProcessed"] = 1;
+      // Return footnote-call first, footnote will be processed via shadowSibling
+      const footnoteCallContext = await this.insertFootnoteCall(nodeContext);
+      this.dispatchEvent({
+        type: "nextInTree",
+        nodeContext: footnoteCallContext,
+      } as any);
+      return footnoteCallContext;
+    }
+
+    this.dispatchEvent({ type: "nextInTree", nodeContext } as any);
+    return nodeContext;
   }
 
   addImageFetchers(bg: Css.Val) {
@@ -4137,7 +4094,13 @@ export class ViewFactory
     nodeContext: Vtree.ChildNodeContext,
     nodeOffset: number,
   ): Task.Result<Vtree.NodeContext> {
-    const frame: Task.Frame<Vtree.NodeContext> = Task.newFrame("peelOff");
+    return fromPromise(this.peelOffAsync(nodeContext, nodeOffset), "peelOff");
+  }
+
+  private async peelOffAsync(
+    nodeContext: Vtree.ChildNodeContext,
+    nodeOffset: number,
+  ): Promise<Vtree.NodeContext> {
     const firstPseudo = nodeContext.firstPseudo;
     let offsetInNode = nodeContext.offsetInNode;
     const after = nodeContext.after;
@@ -4165,43 +4128,31 @@ export class ViewFactory
     let shadowSibling = container.shadowSibling;
     let i = arr.length - 1;
     let rebuilt: Vtree.NodeContext | null = null;
-    frame
-      .loop(() => {
-        while (i >= 0) {
-          const pn = arr[i];
-          const parentContext = rebuilt ?? container.parent;
-          const child = new Vtree.NodeContext(
-            pn.sourceNode,
-            parentContext,
-            boxOffset,
-            (parentContext ?? container).formattingContext,
-          );
-          child.blockContainer =
-            parentContext && Vtree.blockContainerForChildrenOf(parentContext);
-          if (i == 0) {
-            child.offsetInNode = offsetInNode;
-            child.after = after;
-          }
-          child.shadowType = pn.shadowType;
-          child.shadowContext = pn.shadowContext;
-          child.nodeShadow = pn.nodeShadow;
-          child.shadowSibling = pn.shadowSibling
-            ? pn.shadowSibling
-            : shadowSibling;
-          shadowSibling = null;
-          rebuilt = child;
-          i--;
-          const result = this.setCurrent(child, false);
-          if (result.isPending()) {
-            return result;
-          }
-        }
-        return Task.newResult(false);
-      })
-      .then(() => {
-        frame.finish(rebuilt ?? nodeContext.parent);
-      });
-    return frame.result();
+    while (i >= 0) {
+      const pn = arr[i];
+      const parentContext = rebuilt ?? container.parent;
+      const child = new Vtree.NodeContext(
+        pn.sourceNode,
+        parentContext,
+        boxOffset,
+        (parentContext ?? container).formattingContext,
+      );
+      child.blockContainer =
+        parentContext && Vtree.blockContainerForChildrenOf(parentContext);
+      if (i == 0) {
+        child.offsetInNode = offsetInNode;
+        child.after = after;
+      }
+      child.shadowType = pn.shadowType;
+      child.shadowContext = pn.shadowContext;
+      child.nodeShadow = pn.nodeShadow;
+      child.shadowSibling = pn.shadowSibling ? pn.shadowSibling : shadowSibling;
+      shadowSibling = null;
+      rebuilt = child;
+      i--;
+      await this.setCurrentAsync(child, false);
+    }
+    return rebuilt ?? nodeContext.parent;
   }
 
   createElement(ns: string | null, tag: string): Element {
@@ -4217,6 +4168,17 @@ export class ViewFactory
     rtl: boolean,
     target: Element,
   ): Task.Result<boolean> {
+    return fromPromise(
+      this.applyFootnoteStyleAsync(vertical, rtl, target),
+      "applyFootnoteStyle",
+    );
+  }
+
+  private async applyFootnoteStyleAsync(
+    vertical: boolean,
+    rtl: boolean,
+    target: Element,
+  ): Promise<boolean> {
     const computedStyle: { [key: string]: Css.Val } = {};
     const fetchers: TaskUtil.Fetcher<string>[] = [];
 
@@ -4334,9 +4296,9 @@ export class ViewFactory
       this.computedStyleParentLineHeightOverride = prevLineHeightOverride;
     }
     if (fetchers.length) {
-      return waitForFetchersResult(fetchers).thenReturn(vertical);
+      await TaskUtil.waitForFetchers(fetchers);
     }
-    return Task.newResult(vertical);
+    return vertical;
   }
 
   /** @override */
