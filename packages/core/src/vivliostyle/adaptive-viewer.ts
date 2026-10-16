@@ -81,6 +81,8 @@ export class AdaptiveViewer {
   pageSheetSizeAlreadySet: boolean = false;
   /** Aborted to cancel the page rendering in progress (see `renderPages`). */
   renderAbort: AbortController | null = null;
+  /** The background rendering that is running (or has been canceled). */
+  private renderDone: Promise<void> | null = null;
   actions: { [key: string]: Action };
   readyState: Constants.ReadyState = Constants.ReadyState.LOADING;
   packageURL: string[] = [];
@@ -994,11 +996,16 @@ export class AdaptiveViewer {
     // The rendering goes on in the background: resize() does not wait for it.
     const abort = new AbortController();
     this.renderAbort = abort;
-    Promise.resolve()
-      .then(() => this.renderPages(abort))
-      .catch((err) => {
-        Logging.logger.error(err, "Unhandled exception in rendering");
-      });
+    // A canceled rendering has to finish unwinding (it releases the shared
+    // layout state) before the new one starts.
+    const previous = this.renderDone;
+    const done = (async () => {
+      await previous;
+      await this.renderPages(abort);
+    })().catch((err) => {
+      Logging.logger.error(err, "Unhandled exception in rendering");
+    });
+    this.renderDone = done;
     return true;
   }
 
@@ -1008,6 +1015,8 @@ export class AdaptiveViewer {
    */
   private async renderPages(abort: AbortController): Promise<void> {
     const signal = abort.signal;
+    // This rendering is the owner of the page rendering (see RenderLock).
+    const context: Epub.RenderContext = { owner: abort, signal };
     try {
       signal.throwIfAborted();
       if (!this.opf) {
@@ -1039,11 +1048,10 @@ export class AdaptiveViewer {
       // With renderAllPages option specified, the rendering is
       // performed after the initial page display, otherwise users are
       // forced to wait the rendering finish in front of a blank page.
-      const result = await runLegacy(
-        () =>
-          this.opfView.renderPagesUpto(this.pagePosition, !this.renderAllPages),
-        "renderPagesUpto",
-        signal,
+      const result = await this.opfView.renderPagesUpto(
+        this.pagePosition,
+        !this.renderAllPages,
+        context,
       );
       if (!result) {
         return;
@@ -1075,11 +1083,7 @@ export class AdaptiveViewer {
       await this.reportPosition();
       signal.throwIfAborted();
       if (this.renderAllPages) {
-        await runLegacy(
-          () => this.opfView.renderAllPages(),
-          "renderAllPages",
-          signal,
-        );
+        await this.opfView.renderAllPages(context);
       }
       if (this.renderAbort === abort) {
         this.renderAbort = null;

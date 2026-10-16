@@ -738,36 +738,73 @@ describe("epub", function () {
   });
 
   describe("OPFView page rendering", function () {
-    it("stops tracking a render task after a synchronous error", function (done) {
-      adapt_task.start(function () {
-        var view = Object.create(adapt_epub.OPFView.prototype);
-        view.renderingPageTasks = new Map();
-        var error = new Error("render failed");
-        spyOn(view, "renderPageTracked").and.throwError(error);
+    it("releases the render lock after an error", async function () {
+      var view = Object.create(adapt_epub.OPFView.prototype);
+      view.renderLock = new adapt_epub.RenderLock();
+      var error = new Error("render failed");
+      spyOn(view, "renderPageTracked").and.throwError(error);
+      var owner = {};
 
-        return adapt_task.handle(
-          "testRenderErrorCleanup",
-          function () {
-            view.renderPage({
-              spineIndex: 0,
-              pageIndex: 0,
-              offsetInItem: -1,
-            });
-          },
-          function (frame, caughtError) {
-            expect(caughtError).toBe(error);
-            expect(view.renderingPageTasks.size).toBe(0);
-            frame.finish(true);
-            done();
-          },
-        );
+      await expectAsync(
+        view.renderPage(
+          { spineIndex: 0, pageIndex: 0, offsetInItem: -1 },
+          { owner: owner },
+        ),
+      ).toBeRejectedWith(error);
+      expect(view.renderLock.isHeldByAnother({})).toBe(false);
+      expect(view.renderLock.tryAcquire({})).toBe(true);
+    });
+
+    it("lets only one owner render a page at a time", async function () {
+      var view = Object.create(adapt_epub.OPFView.prototype);
+      view.renderLock = new adapt_epub.RenderLock();
+      var log = [];
+      spyOn(view, "renderPageTracked").and.callFake(async function (position) {
+        log.push("start " + position.spineIndex);
+        await new Promise(function (resolve) {
+          setTimeout(resolve, 10);
+        });
+        log.push("end " + position.spineIndex);
+        return { id: position.spineIndex };
       });
+      view.pageSheetSizeTruncator = function () {};
+      view.getRenderedPageSizeCount = function () {
+        return 0;
+      };
+      var first = view.renderPage(
+        { spineIndex: 0, pageIndex: 0, offsetInItem: -1 },
+        { owner: {} },
+      );
+      var second = view.renderPage(
+        { spineIndex: 1, pageIndex: 0, offsetInItem: -1 },
+        { owner: {} },
+      );
+      expect(await first).toEqual({ id: 0 });
+      expect(await second).toEqual({ id: 1 });
+      expect(log).toEqual(["start 0", "end 0", "start 1", "end 1"]);
+    });
+
+    it("stops waiting for the render lock when the rendering is canceled", async function () {
+      var view = Object.create(adapt_epub.OPFView.prototype);
+      view.renderLock = new adapt_epub.RenderLock();
+      var holder = {};
+      view.renderLock.tryAcquire(holder);
+      var abort = new AbortController();
+      var pending = view.renderPage(
+        { spineIndex: 0, pageIndex: 0, offsetInItem: -1 },
+        { owner: {}, signal: abort.signal },
+      );
+      var reason = new Error("canceled");
+      abort.abort(reason);
+      await expectAsync(pending).toBeRejectedWith(reason);
+      view.renderLock.release(holder);
+      expect(view.renderLock.tryAcquire({})).toBe(true);
     });
 
     it("waits for a pending page being rendered by another task", function (done) {
       adapt_task.start(function () {
         var view = Object.create(adapt_epub.OPFView.prototype);
-        view.renderingPageTasks = new Map();
+        view.renderLock = new adapt_epub.RenderLock();
         var page = {};
         var viewItem = {
           complete: false,
@@ -781,17 +818,12 @@ describe("epub", function () {
           adapt_task.newResult(viewItem),
         );
         spyOn(view, "renderPage").and.callThrough();
-        var scheduler = adapt_task.currentTask().getScheduler();
-        var backgroundTask = scheduler.run(function () {
-          var frame = adapt_task.newFrame("backgroundRender");
-          view.beginRenderingPage(adapt_task.currentTask());
-          frame.sleep(50).then(function () {
-            viewItem.pages[1] = page;
-            view.endRenderingPage(adapt_task.currentTask());
-            frame.finish(true);
-          });
-          return frame.result();
-        });
+        var background = {};
+        view.renderLock.tryAcquire(background);
+        setTimeout(function () {
+          viewItem.pages[1] = page;
+          view.renderLock.release(background);
+        }, 50);
         var testFrame = adapt_task.newFrame("testPendingPageWait");
         testFrame.sleep(10).then(function () {
           view
@@ -799,10 +831,8 @@ describe("epub", function () {
             .then(function (result) {
               expect(result.page).toBe(page);
               expect(view.renderPage).not.toHaveBeenCalled();
-              backgroundTask.join().then(function () {
-                testFrame.finish(true);
-                done();
-              });
+              testFrame.finish(true);
+              done();
             });
         });
         return testFrame.result();
@@ -816,7 +846,7 @@ describe("epub", function () {
         var cachedPage = {};
         var rebuiltPage = {};
         view.deferredFollowingSpineRelayoutStart = 1;
-        view.renderingPageTasks = new Map();
+        view.renderLock = new adapt_epub.RenderLock();
         spyOn(view, "waitForPreviousSpines").and.returnValue(
           adapt_task.newResult(true),
         );
@@ -824,14 +854,17 @@ describe("epub", function () {
           adapt_task.newResult({ pages: [cachedPage], complete: true }),
         );
         spyOn(view, "renderPage").and.returnValue(
-          adapt_task.newResult({
+          Promise.resolve({
             page: rebuiltPage,
             position: position,
           }),
         );
 
         view.findPage(position, false).then(function (result) {
-          expect(view.renderPage).toHaveBeenCalledOnceWith(position);
+          expect(view.renderPage).toHaveBeenCalledOnceWith(
+            position,
+            jasmine.objectContaining({ owner: jasmine.anything() }),
+          );
           expect(result.page).toBe(rebuiltPage);
           done();
         });
@@ -848,6 +881,7 @@ describe("epub", function () {
         var viewItem = { pages: [stalePage], complete: true };
         view.deferredFollowingSpineRelayoutStart = 1;
         view.renderingAllPages = true;
+        view.renderLock = new adapt_epub.RenderLock();
         spyOn(view, "waitForPreviousSpines").and.returnValue(
           adapt_task.newResult(true),
         );
@@ -855,7 +889,7 @@ describe("epub", function () {
           return adapt_task.newResult(viewItem);
         });
         spyOn(view, "renderPage").and.returnValue(
-          adapt_task.newResult({ page: stalePage, position: position }),
+          Promise.resolve({ page: stalePage, position: position }),
         );
         var scheduler = adapt_task.currentTask().getScheduler();
         var backgroundTask = scheduler.run(function () {
@@ -908,7 +942,9 @@ describe("epub", function () {
         var viewItem = { pages: [rebuiltPage], complete: true };
         view.deferredFollowingSpineRelayoutStart = 1;
         view.renderingAllPages = false;
-        view.renderingPageTasks = new Map([[{}, 1]]);
+        view.renderLock = new adapt_epub.RenderLock();
+        var otherOwner = {};
+        view.renderLock.tryAcquire(otherOwner);
         spyOn(view, "waitForPreviousSpines").and.returnValue(
           adapt_task.newResult(true),
         );
@@ -920,7 +956,7 @@ describe("epub", function () {
         var rebuildTask = scheduler.run(function () {
           var rebuildFrame = adapt_task.newFrame("finishNavigationRebuild");
           rebuildFrame.sleep(50).then(function () {
-            view.renderingPageTasks.clear();
+            view.renderLock.release(otherOwner);
             view.deferredFollowingSpineRelayoutStart = null;
             rebuildFrame.finish(true);
           });
@@ -944,7 +980,8 @@ describe("epub", function () {
         var position = { spineIndex: 1, pageIndex: 0, offsetInItem: -1 };
         view.deferredFollowingSpineRelayoutStart = 1;
         view.renderingAllPages = false;
-        view.renderingPageTasks = new Map([[{}, 1]]);
+        view.renderLock = new adapt_epub.RenderLock();
+        view.renderLock.tryAcquire({});
         spyOn(view, "waitForPreviousSpines").and.returnValue(
           adapt_task.newResult(true),
         );
@@ -1091,11 +1128,11 @@ describe("epub", function () {
         view.reportPaginationProgress = function () {};
         view.maybeRelayoutFollowingPage = function () {
           expect(viewItem.complete).not.toBe(true);
-          return adapt_task.newResult(true);
+          return Promise.resolve();
         };
         view.resolveUnresolvedReferencesForPage = function () {
           expect(viewItem.complete).not.toBe(true);
-          return adapt_task.newResult(page);
+          return Promise.resolve(page);
         };
 
         view.renderSinglePage(viewItem, { page: 15 }).then(function () {
@@ -1235,10 +1272,10 @@ describe("epub", function () {
         };
         view.reportPaginationProgress = function () {};
         view.maybeRelayoutFollowingPage = function () {
-          return adapt_task.newResult(true);
+          return Promise.resolve();
         };
         view.resolveUnresolvedReferencesForPage = function () {
-          return adapt_task.newResult(page);
+          return Promise.resolve(page);
         };
 
         view.renderSinglePage(viewItem, { page: 0 }).then(function () {
@@ -1511,7 +1548,7 @@ describe("epub", function () {
         spyOn(
           view,
           "resolveDeferredReferencesAfterCounterScope",
-        ).and.returnValue(adapt_task.newResult(targetPage));
+        ).and.returnValue(Promise.resolve(targetPage));
 
         view
           .resolveChangedRetainedTargetReferences(
@@ -1531,6 +1568,7 @@ describe("epub", function () {
               targetPage,
               0,
               nextPosition,
+              undefined,
             );
             done();
           });
@@ -1559,9 +1597,10 @@ describe("epub", function () {
             return 2;
           },
         );
+        var context = { owner: {} };
         spyOn(view, "renderPagesUpto").and.returnValues(
-          adapt_task.newResult({ id: "first" }),
-          adapt_task.newResult({ id: "stable" }),
+          Promise.resolve({ id: "first" }),
+          Promise.resolve({ id: "stable" }),
         );
         var changedTargetIds = new Set(["target"]);
         spyOn(view, "updateRetainedTargetCounters").and.returnValues(
@@ -1573,25 +1612,30 @@ describe("epub", function () {
             if (targetIds.size) {
               view.deferredFollowingSpineRelayoutStart = 1;
             }
-            return adapt_task.newResult(true);
+            return Promise.resolve();
           },
         );
 
-        view.rerenderDeferredFollowingSpines(position).then(function (result) {
-          expect(passStarts).toEqual([1, 1]);
-          expect(view.renderPagesUpto.calls.count()).toBe(2);
-          expect(view.renderPagesUpto.calls.allArgs()).toEqual([
-            [position, false],
-            [position, false],
-          ]);
-          expect(result).toEqual({ id: "stable" });
-          expect(
-            view.resolveChangedRetainedTargetReferences.calls.allArgs(),
-          ).toEqual([[changedTargetIds], [new Set()]]);
-          expect(view.relayoutingFollowingSpines).toBe(false);
-          expect(view.relayoutingFollowingSpineStart).toBeNull();
-          done();
-        });
+        view
+          .rerenderDeferredFollowingSpines(position, context)
+          .then(function (result) {
+            expect(passStarts).toEqual([1, 1]);
+            expect(view.renderPagesUpto.calls.count()).toBe(2);
+            expect(view.renderPagesUpto.calls.allArgs()).toEqual([
+              [position, false, context],
+              [position, false, context],
+            ]);
+            expect(result).toEqual({ id: "stable" });
+            expect(
+              view.resolveChangedRetainedTargetReferences.calls.allArgs(),
+            ).toEqual([
+              [changedTargetIds, undefined],
+              [new Set(), undefined],
+            ]);
+            expect(view.relayoutingFollowingSpines).toBe(false);
+            expect(view.relayoutingFollowingSpineStart).toBeNull();
+            done();
+          });
         return adapt_task.newResult(true);
       });
     });
@@ -1625,17 +1669,18 @@ describe("epub", function () {
             view.deferredFollowingSpineRelayoutStart = null;
           },
         );
+        var context = { owner: {} };
         spyOn(view, "renderPagesUpto").and.returnValues(
-          adapt_task.newResult(initialResult),
-          adapt_task.newResult(rerenderedResult),
+          Promise.resolve(initialResult),
+          Promise.resolve(rerenderedResult),
         );
 
-        view.renderAllPages().then(function (result) {
+        view.renderAllPages(context).then(function (result) {
           expect(view.relayoutDeferredFollowingSpines).toHaveBeenCalled();
           expect(view.renderPagesUpto.calls.count()).toBe(2);
           expect(view.renderPagesUpto.calls.allArgs()).toEqual([
-            [finalPosition, false],
-            [finalPosition, false],
+            [finalPosition, false, context],
+            [finalPosition, false, context],
           ]);
           expect(result).toBe(rerenderedResult);
           expect(
@@ -1664,7 +1709,7 @@ describe("epub", function () {
         var requestedResult = { id: "requested" };
         var rerenderedResult = { id: "rerendered" };
         var sourcePage = { id: "source", fetchers: [] };
-        view.renderingPageTasks = new Map();
+        view.renderLock = new adapt_epub.RenderLock();
         view.renderingAllPages = false;
         view.relayoutingFollowingSpines = false;
         view.spineItems = [
@@ -1679,9 +1724,10 @@ describe("epub", function () {
           "pageSheetSizeTruncator",
         );
         view.deferredFollowingSpineRelayoutStart = 1;
+        var context = { owner: {} };
         spyOn(view, "renderPageTracked").and.returnValues(
-          adapt_task.newResult(initialResult),
-          adapt_task.newResult(requestedResult),
+          Promise.resolve(initialResult),
+          Promise.resolve(requestedResult),
         );
         spyOn(view, "relayoutDeferredFollowingSpines").and.callFake(
           function () {
@@ -1690,10 +1736,10 @@ describe("epub", function () {
           },
         );
         spyOn(view, "renderPagesUpto").and.returnValue(
-          adapt_task.newResult(rerenderedResult),
+          Promise.resolve(rerenderedResult),
         );
 
-        view.renderPage(position).then(function (result) {
+        view.renderPage(position, context).then(function (result) {
           expect(view.relayoutDeferredFollowingSpines).toHaveBeenCalled();
           expect(view.renderPagesUpto).toHaveBeenCalledWith(
             {
@@ -1702,6 +1748,7 @@ describe("epub", function () {
               offsetInItem: -1,
             },
             false,
+            context,
           );
           expect(view.renderPageTracked.calls.count()).toBe(2);
           expect(result).toBe(requestedResult);
@@ -1712,7 +1759,7 @@ describe("epub", function () {
             view.counterStore.updateTargetTextNodesInPages,
           ).toHaveBeenCalledOnceWith([sourcePage], jasmine.any(Set));
           expect(view.relayoutingFollowingSpines).toBe(false);
-          expect(view.renderingPageTasks.size).toBe(0);
+          expect(view.renderLock.isHeldByAnother({})).toBe(false);
           expect(view.pageSheetSizeTruncator).toHaveBeenCalledOnceWith(5);
           done();
         });
@@ -1732,7 +1779,7 @@ describe("epub", function () {
         var requestedResult = { id: "requested" };
         var farthestResult = { id: "farthest" };
         var sourcePage = { id: "source", fetchers: [] };
-        view.renderingPageTasks = new Map();
+        view.renderLock = new adapt_epub.RenderLock();
         view.renderingAllPages = false;
         view.relayoutingFollowingSpines = false;
         view.spineItems = [
@@ -1747,9 +1794,10 @@ describe("epub", function () {
           "pageSheetSizeTruncator",
         );
         view.deferredFollowingSpineRelayoutStart = 1;
+        var context = { owner: {} };
         spyOn(view, "renderPageTracked").and.returnValues(
-          adapt_task.newResult(initialResult),
-          adapt_task.newResult(requestedResult),
+          Promise.resolve(initialResult),
+          Promise.resolve(requestedResult),
         );
         spyOn(view, "relayoutDeferredFollowingSpines").and.callFake(
           function () {
@@ -1758,10 +1806,10 @@ describe("epub", function () {
           },
         );
         spyOn(view, "renderPagesUpto").and.returnValue(
-          adapt_task.newResult(farthestResult),
+          Promise.resolve(farthestResult),
         );
 
-        view.renderPage(position).then(function (result) {
+        view.renderPage(position, context).then(function (result) {
           expect(view.renderPagesUpto).toHaveBeenCalledOnceWith(
             {
               spineIndex: 4,
@@ -1769,6 +1817,7 @@ describe("epub", function () {
               offsetInItem: -1,
             },
             false,
+            context,
           );
           expect(view.renderPageTracked.calls.count()).toBe(2);
           expect(result).toBe(requestedResult);
@@ -1779,7 +1828,7 @@ describe("epub", function () {
             view.counterStore.updateTargetTextNodesInPages,
           ).toHaveBeenCalledOnceWith([sourcePage], jasmine.any(Set));
           expect(view.relayoutingFollowingSpines).toBe(false);
-          expect(view.renderingPageTasks.size).toBe(0);
+          expect(view.renderLock.isHeldByAnother({})).toBe(false);
           expect(view.pageSheetSizeTruncator).toHaveBeenCalledOnceWith(5);
           done();
         });
@@ -1808,7 +1857,7 @@ describe("epub", function () {
           return false;
         };
         spyOn(view, "resolveUnresolvedReferencesForPage").and.returnValue(
-          adapt_task.newResult(page),
+          Promise.resolve(page),
         );
 
         view
@@ -1821,7 +1870,13 @@ describe("epub", function () {
           .then(function (result) {
             expect(
               view.resolveUnresolvedReferencesForPage,
-            ).toHaveBeenCalledWith(viewItem, page, 15, nextLayoutPosition);
+            ).toHaveBeenCalledWith(
+              viewItem,
+              page,
+              15,
+              nextLayoutPosition,
+              undefined,
+            );
             expect(result).toBe(page);
             done();
           });
@@ -1899,7 +1954,7 @@ describe("epub", function () {
           return inCounterScope;
         };
         spyOn(view, "resolveUnresolvedReferencesForPage").and.returnValue(
-          adapt_task.newResult(page),
+          Promise.resolve(page),
         );
 
         view
@@ -1919,7 +1974,7 @@ describe("epub", function () {
               .then(function () {
                 expect(
                   view.resolveUnresolvedReferencesForPage,
-                ).toHaveBeenCalledWith(viewItem, page, 0, null);
+                ).toHaveBeenCalledWith(viewItem, page, 0, null, undefined);
                 expect(
                   view.resolveUnresolvedReferencesForPage.calls.count(),
                 ).toBe(1);
@@ -1989,7 +2044,7 @@ describe("epub", function () {
                 null,
               );
             }
-            return adapt_task.newResult(page);
+            return Promise.resolve(page);
           },
         );
 
@@ -2225,10 +2280,10 @@ describe("epub", function () {
       view.resolvePageTypeForRenderSlot = function () {};
       view.finishPageContainer = function () {};
       view.maybeRelayoutFollowingPage = function () {
-        return adapt_task.newResult(true);
+        return Promise.resolve();
       };
       view.resolveUnresolvedReferencesForPage = function (viewItem, page) {
-        return adapt_task.newResult(page);
+        return Promise.resolve(page);
       };
 
       var viewItem = createFakeViewItem(view, 0, 100);
