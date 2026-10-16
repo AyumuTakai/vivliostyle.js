@@ -50,9 +50,8 @@ import * as CssPage from "./css-page";
 import * as Plugin from "./plugin";
 import * as PageMaster from "./page-master";
 import * as Scripts from "./scripts";
-import * as Task from "./task";
 import * as TaskUtil from "./task-util";
-import { waitForFetchersResult } from "./task-bridge";
+import { runLegacy } from "./task-bridge";
 import * as TextPolyfill from "./text-polyfill";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
@@ -1673,7 +1672,7 @@ export class StyleInstance
     );
   }
 
-  layoutDeferredPageFloats(column: LayoutType.Column): Task.Result<boolean> {
+  async layoutDeferredPageFloats(column: LayoutType.Column): Promise<boolean> {
     const pageFloatLayoutContext = column.pageFloatLayoutContext;
     const deferredFloats =
       pageFloatLayoutContext.getDeferredPageFloatContinuations();
@@ -1714,71 +1713,59 @@ export class StyleInstance
       );
     };
 
-    const frame = Task.newFrame<boolean>("layoutDeferredPageFloats");
     let invalidated = false;
     let i = 0;
-    frame
-      .loopWithFrame((loopFrame) => {
-        if (i === deferredFloats.length) {
-          loopFrame.breakLoop();
-          return;
-        }
-        const continuation = deferredFloats[i++];
-        const float = continuation.float;
+    while (i < deferredFloats.length) {
+      const continuation = deferredFloats[i++];
+      const float = continuation.float;
 
-        // Prevent deferred page floats from appearing in the preceding pages
-        // (Issue #681)
-        if (checkPageFloatForLaterPage(float)) {
-          loopFrame.breakLoop();
-          return;
-        }
+      // Prevent deferred page floats from appearing in the preceding pages
+      // (Issue #681)
+      if (checkPageFloatForLaterPage(float)) {
+        break;
+      }
 
-        const strategy =
-          new PageFloats.PageFloatLayoutStrategyResolver().findByFloat(float);
-        const pageFloatFragment = strategy.findPageFloatFragment(
-          float,
-          pageFloatLayoutContext,
-        );
-        if (pageFloatFragment && pageFloatFragment.hasFloat(float)) {
-          loopFrame.continueLoop();
-          return;
-        } else if (
-          pageFloatLayoutContext.isForbidden(float) ||
-          pageFloatLayoutContext.hasPrecedingFloatsDeferredToNext(float)
-        ) {
-          pageFloatLayoutContext.deferPageFloat(continuation);
-          loopFrame.breakLoop();
-          return;
-        }
-        column
-          .layoutPageFloatInner(continuation, strategy, null, pageFloatFragment)
-          .then((success) => {
-            if (!success) {
-              loopFrame.breakLoop();
-              return;
-            }
-            const parentInvalidated =
-              pageFloatLayoutContext.parent.isInvalidated();
-            if (parentInvalidated) {
-              loopFrame.breakLoop();
-              return;
-            } else if (
-              pageFloatLayoutContext.isInvalidated() &&
-              !parentInvalidated
-            ) {
-              invalidated = true;
-              pageFloatLayoutContext.validate();
-            }
-            loopFrame.continueLoop();
-          });
-      })
-      .then(() => {
-        if (invalidated) {
-          pageFloatLayoutContext.invalidate();
-        }
-        frame.finish(true);
-      });
-    return frame.result();
+      const strategy =
+        new PageFloats.PageFloatLayoutStrategyResolver().findByFloat(float);
+      const pageFloatFragment = strategy.findPageFloatFragment(
+        float,
+        pageFloatLayoutContext,
+      );
+      if (pageFloatFragment && pageFloatFragment.hasFloat(float)) {
+        continue;
+      } else if (
+        pageFloatLayoutContext.isForbidden(float) ||
+        pageFloatLayoutContext.hasPrecedingFloatsDeferredToNext(float)
+      ) {
+        pageFloatLayoutContext.deferPageFloat(continuation);
+        break;
+      }
+      const success = await runLegacy(
+        () =>
+          column.layoutPageFloatInner(
+            continuation,
+            strategy,
+            null,
+            pageFloatFragment,
+          ),
+        "layoutPageFloatInner",
+        this.layoutSignal,
+      );
+      if (!success) {
+        break;
+      }
+      const parentInvalidated = pageFloatLayoutContext.parent.isInvalidated();
+      if (parentInvalidated) {
+        break;
+      } else if (pageFloatLayoutContext.isInvalidated() && !parentInvalidated) {
+        invalidated = true;
+        pageFloatLayoutContext.validate();
+      }
+    }
+    if (invalidated) {
+      pageFloatLayoutContext.invalidate();
+    }
+    return true;
   }
 
   getLastAfterPositionIfDeferredFloatsExists(
@@ -1823,10 +1810,10 @@ export class StyleInstance
   /**
    * @return holding true
    */
-  layoutColumn(
+  async layoutColumn(
     column: LayoutType.Column,
     flowName: string,
-  ): Task.Result<boolean> {
+  ): Promise<boolean> {
     const flowPosition = this.currentLayoutPosition.flowPositions[flowName];
     if (!flowPosition || !this.matchPageSide(flowPosition.startBreakType)) {
       // On blank pages created by spread breaks (e.g., break-after: left),
@@ -1835,7 +1822,7 @@ export class StyleInstance
       if (flowPosition) {
         return this.layoutDeferredPageFloats(column);
       }
-      return Task.newResult(true);
+      return true;
     }
 
     if (this.primaryFlows[flowName] && column.bands.length > 0) {
@@ -1843,225 +1830,194 @@ export class StyleInstance
       // flow columns that have exclusions.
       column.forceNonfitting = false;
     }
-    const frame: Task.Frame<boolean> = Task.newFrame("layoutColumn");
-    this.layoutDeferredPageFloats(column).then(() => {
-      if (column.pageFloatLayoutContext.isInvalidated()) {
-        frame.finish(true);
-        return;
-      }
+    await this.layoutDeferredPageFloats(column);
+    if (column.pageFloatLayoutContext.isInvalidated()) {
+      return true;
+    }
 
-      // Record indices of repeated positions and removed positions
-      const repeatedIndices = [] as number[];
-      const removedIndices = [] as number[];
-      let leadingEdge = true;
-      frame
-        .loopWithFrame((loopFrame) => {
-          if (
-            column.pageFloatLayoutContext.hasContinuingFloatFragmentsInFlow(
-              flowName,
-            )
-          ) {
-            loopFrame.breakLoop();
-            return;
+    // Record indices of repeated positions and removed positions
+    const repeatedIndices = [] as number[];
+    const removedIndices = [] as number[];
+    let leadingEdge = true;
+    if (
+      !column.pageFloatLayoutContext.hasContinuingFloatFragmentsInFlow(flowName)
+    ) {
+      while (flowPosition.positions.length - removedIndices.length > 0) {
+        let index = 0;
+
+        // Skip all removed positions
+        while (removedIndices.includes(index)) {
+          index++;
+        }
+        let selected = flowPosition.positions[index];
+        if (
+          selected.flowChunk.startOffset > this.lookupOffset ||
+          this.flowChunkIsAfterParentFlowForcedBreak(selected.flowChunk)
+        ) {
+          break;
+        }
+        for (let k = index + 1; k < flowPosition.positions.length; k++) {
+          if (removedIndices.includes(k)) {
+            continue; // Skip removed positions
           }
-          while (flowPosition.positions.length - removedIndices.length > 0) {
-            let index = 0;
+          const alt = flowPosition.positions[k];
+          if (
+            alt.flowChunk.startOffset > this.lookupOffset ||
+            this.flowChunkIsAfterParentFlowForcedBreak(alt.flowChunk)
+          ) {
+            break;
+          }
+          if (alt.flowChunk.isBetter(selected.flowChunk)) {
+            selected = alt;
+            index = k;
+          }
+        }
+        const flowChunk = selected.flowChunk;
+        const newPosition = await runLegacy(
+          () =>
+            column.layout(
+              selected.chunkPosition,
+              leadingEdge,
+              flowPosition.breakAfter,
+            ),
+          "layout",
+          this.layoutSignal,
+        );
+        if (column.pageFloatLayoutContext.isInvalidated()) {
+          break;
+        }
+        leadingEdge = false;
 
-            // Skip all removed positions
-            while (removedIndices.includes(index)) {
-              index++;
+        // static: keep in the flow
+        if (
+          selected.flowChunk.repeated &&
+          (newPosition === null || flowChunk.exclusive)
+        ) {
+          repeatedIndices.push(index);
+        }
+        if (flowChunk.exclusive) {
+          // exclusive, only can have one, remove from the flow even
+          // if it did not fit
+          removedIndices.push(index);
+          break;
+        } else {
+          // not exclusive
+          const endOfColumn = !!newPosition || !!column.pageBreakType;
+          const lastAfterPosition =
+            this.getLastAfterPositionIfDeferredFloatsExists(
+              column,
+              newPosition,
+            );
+          // CSS Fragmentation: forced break-after on the last child
+          // of a fragmentainer has no effect when there is no more
+          // content after it. When all content in the flow is consumed
+          // (newPosition is null and no remaining flow chunks) and the
+          // column has a pageBreakType from the last element's
+          // break-after, clear it to avoid generating unnecessary
+          // blank pages. (Issue #1880)
+          if (!newPosition && column.pageBreakType) {
+            // Count remaining positions (excluding current and removed)
+            const remainingPositions =
+              flowPosition.positions.length - removedIndices.length - 1; // -1 for current position being removed
+            if (remainingPositions <= 0) {
+              column.pageBreakType = null;
             }
-            let selected = flowPosition.positions[index];
-            if (
-              selected.flowChunk.startOffset > this.lookupOffset ||
-              this.flowChunkIsAfterParentFlowForcedBreak(selected.flowChunk)
-            ) {
+          }
+          if (column.pageBreakType && lastAfterPosition) {
+            selected.chunkPosition = lastAfterPosition;
+
+            // TODO propagate pageBreakType
+            flowPosition.breakAfter = column.pageBreakType;
+            column.pageBreakType = null;
+          } else {
+            // go to the next element in the flow
+            removedIndices.push(index);
+            if (newPosition || lastAfterPosition) {
+              // did not fit completely
+              selected.chunkPosition = newPosition || lastAfterPosition;
+              repeatedIndices.push(index);
+            }
+            // forced break or "auto"
+            flowPosition.startBreakType = Break.breakValueToStartBreakType(
+              column.pageBreakType,
+            );
+          }
+          if (endOfColumn) {
+            break;
+          }
+        }
+
+        // Since at least one flowChunk has been placed in the
+        // column, the next flowChunk of the flow can be deferred to
+        // the next partition if there is not enough space in the
+        // current partition.
+        column.forceNonfitting = false;
+      }
+    }
+
+    if (!column.pageFloatLayoutContext.isInvalidated()) {
+      // Keep positions repeated or not removed
+      flowPosition.positions = flowPosition.positions.filter(
+        (pos, i) => repeatedIndices.includes(i) || !removedIndices.includes(i),
+      );
+      if (flowPosition.breakAfter === "column") {
+        flowPosition.breakAfter = null;
+      }
+      column.saveDistanceToBlockEndFloats();
+      const edge = column.pageFloatLayoutContext.getMaxReachedAfterEdge();
+      column.updateMaxReachedAfterEdge(edge);
+
+      // CSS GCPM §2.4.2: "The max-height property on the footnote area
+      // limits the size of this area, unless the page contains only
+      // footnotes." (Issue #1878)
+      // Detect pages with only footnote continuation(s) and no body
+      // content. If the column placed no body content (computedBlockSize
+      // is 0) and there are footnote fragments with max-height, remove
+      // those fragments and retry without max-height.
+      if (column.computedBlockSize === 0) {
+        const colCtx = column.pageFloatLayoutContext;
+        // Traverse up the context hierarchy to find footnote fragments
+        // (footnotes are stored at the PAGE-level context)
+        let ctx: PageFloatsType.PageFloatLayoutContext | null = colCtx;
+        while (ctx) {
+          const footnoteFragments = ctx.floatFragments.filter(
+            (f) => "isFootnote" in f.area && (f.area as any).isFootnote,
+          );
+          if (
+            footnoteFragments.length > 0 &&
+            !ctx.ignoreFootnoteAreaMaxHeight
+          ) {
+            const hasMaxHeight = footnoteFragments.some((f) => {
+              const cs = getComputedStyle(f.area.element);
+              const isSet = (v: string) => v !== "" && v !== "none";
+              // Check the logical property first, then the
+              // corresponding physical property for block direction
+              return (
+                isSet(cs.getPropertyValue("max-block-size")) ||
+                isSet((f.area as any).vertical ? cs.maxWidth : cs.maxHeight)
+              );
+            });
+            if (hasMaxHeight) {
+              ctx.ignoreFootnoteAreaMaxHeight = true;
+              for (const frag of footnoteFragments) {
+                // Remove fragment so it can be re-laid out
+                colCtx.removePageFloatFragment(frag, true);
+                // Remove deferred continuation from first pass
+                const float = frag.continuations[0]?.float;
+                if (float) {
+                  ctx.removeFloatDeferredToNext(float);
+                }
+              }
+              // Invalidate column to trigger retry
+              colCtx.invalidate();
               break;
             }
-            for (let k = index + 1; k < flowPosition.positions.length; k++) {
-              if (removedIndices.includes(k)) {
-                continue; // Skip removed positions
-              }
-              const alt = flowPosition.positions[k];
-              if (
-                alt.flowChunk.startOffset > this.lookupOffset ||
-                this.flowChunkIsAfterParentFlowForcedBreak(alt.flowChunk)
-              ) {
-                break;
-              }
-              if (alt.flowChunk.isBetter(selected.flowChunk)) {
-                selected = alt;
-                index = k;
-              }
-            }
-            const flowChunk = selected.flowChunk;
-            let pending = true;
-            column
-              .layout(
-                selected.chunkPosition,
-                leadingEdge,
-                flowPosition.breakAfter,
-              )
-              .then((newPosition) => {
-                if (column.pageFloatLayoutContext.isInvalidated()) {
-                  loopFrame.breakLoop();
-                  return;
-                }
-                leadingEdge = false;
-
-                // static: keep in the flow
-                if (
-                  selected.flowChunk.repeated &&
-                  (newPosition === null || flowChunk.exclusive)
-                ) {
-                  repeatedIndices.push(index);
-                }
-                if (flowChunk.exclusive) {
-                  // exclusive, only can have one, remove from the flow even
-                  // if it did not fit
-                  removedIndices.push(index);
-                  loopFrame.breakLoop();
-                  return;
-                } else {
-                  // not exclusive
-                  const endOfColumn = !!newPosition || !!column.pageBreakType;
-                  const lastAfterPosition =
-                    this.getLastAfterPositionIfDeferredFloatsExists(
-                      column,
-                      newPosition,
-                    );
-                  // CSS Fragmentation: forced break-after on the last child
-                  // of a fragmentainer has no effect when there is no more
-                  // content after it. When all content in the flow is consumed
-                  // (newPosition is null and no remaining flow chunks) and the
-                  // column has a pageBreakType from the last element's
-                  // break-after, clear it to avoid generating unnecessary
-                  // blank pages. (Issue #1880)
-                  if (!newPosition && column.pageBreakType) {
-                    // Count remaining positions (excluding current and removed)
-                    const remainingPositions =
-                      flowPosition.positions.length - removedIndices.length - 1; // -1 for current position being removed
-                    if (remainingPositions <= 0) {
-                      column.pageBreakType = null;
-                    }
-                  }
-                  if (column.pageBreakType && lastAfterPosition) {
-                    selected.chunkPosition = lastAfterPosition;
-
-                    // TODO propagate pageBreakType
-                    flowPosition.breakAfter = column.pageBreakType;
-                    column.pageBreakType = null;
-                  } else {
-                    // go to the next element in the flow
-                    removedIndices.push(index);
-                    if (newPosition || lastAfterPosition) {
-                      // did not fit completely
-                      selected.chunkPosition = newPosition || lastAfterPosition;
-                      repeatedIndices.push(index);
-                    }
-                    // forced break or "auto"
-                    flowPosition.startBreakType =
-                      Break.breakValueToStartBreakType(column.pageBreakType);
-                  }
-                  if (endOfColumn) {
-                    loopFrame.breakLoop();
-                    return;
-                  }
-                }
-
-                // Since at least one flowChunk has been placed in the
-                // column, the next flowChunk of the flow can be deferred to
-                // the next partition if there is not enough space in the
-                // current partition.
-                column.forceNonfitting = false;
-                if (pending) {
-                  // Sync result
-                  pending = false;
-                } else {
-                  // Async result
-                  loopFrame.continueLoop();
-                }
-              });
-            if (pending) {
-              // Async result
-              pending = false;
-              return;
-            }
           }
-
-          // Sync result
-          loopFrame.breakLoop();
-        })
-        .then(() => {
-          if (!column.pageFloatLayoutContext.isInvalidated()) {
-            // Keep positions repeated or not removed
-            flowPosition.positions = flowPosition.positions.filter(
-              (pos, i) =>
-                repeatedIndices.includes(i) || !removedIndices.includes(i),
-            );
-            if (flowPosition.breakAfter === "column") {
-              flowPosition.breakAfter = null;
-            }
-            column.saveDistanceToBlockEndFloats();
-            const edge = column.pageFloatLayoutContext.getMaxReachedAfterEdge();
-            column.updateMaxReachedAfterEdge(edge);
-
-            // CSS GCPM §2.4.2: "The max-height property on the footnote area
-            // limits the size of this area, unless the page contains only
-            // footnotes." (Issue #1878)
-            // Detect pages with only footnote continuation(s) and no body
-            // content. If the column placed no body content (computedBlockSize
-            // is 0) and there are footnote fragments with max-height, remove
-            // those fragments and retry without max-height.
-            if (column.computedBlockSize === 0) {
-              const colCtx = column.pageFloatLayoutContext;
-              // Traverse up the context hierarchy to find footnote fragments
-              // (footnotes are stored at the PAGE-level context)
-              let ctx: PageFloatsType.PageFloatLayoutContext | null = colCtx;
-              while (ctx) {
-                const footnoteFragments = ctx.floatFragments.filter(
-                  (f) => "isFootnote" in f.area && (f.area as any).isFootnote,
-                );
-                if (
-                  footnoteFragments.length > 0 &&
-                  !ctx.ignoreFootnoteAreaMaxHeight
-                ) {
-                  const hasMaxHeight = footnoteFragments.some((f) => {
-                    const cs = getComputedStyle(f.area.element);
-                    const isSet = (v: string) => v !== "" && v !== "none";
-                    // Check the logical property first, then the
-                    // corresponding physical property for block direction
-                    return (
-                      isSet(cs.getPropertyValue("max-block-size")) ||
-                      isSet(
-                        (f.area as any).vertical ? cs.maxWidth : cs.maxHeight,
-                      )
-                    );
-                  });
-                  if (hasMaxHeight) {
-                    ctx.ignoreFootnoteAreaMaxHeight = true;
-                    for (const frag of footnoteFragments) {
-                      // Remove fragment so it can be re-laid out
-                      colCtx.removePageFloatFragment(frag, true);
-                      // Remove deferred continuation from first pass
-                      const float = frag.continuations[0]?.float;
-                      if (float) {
-                        ctx.removeFloatDeferredToNext(float);
-                      }
-                    }
-                    // Invalidate column to trigger retry
-                    colCtx.invalidate();
-                    break;
-                  }
-                }
-                ctx = ctx.parent;
-              }
-            }
-          }
-          frame.finish(true);
-        });
-    });
-    return frame.result();
+          ctx = ctx.parent;
+        }
+      }
+    }
+    return true;
   }
 
   createLayoutConstraint(
@@ -2075,7 +2031,7 @@ export class StyleInstance
     );
   }
 
-  private createAndLayoutColumn(
+  private async createAndLayoutColumn(
     boxInstance: PageMaster.PageBoxInstance,
     offsetX: number,
     offsetY: number,
@@ -2090,7 +2046,7 @@ export class StyleInstance
     innerShape: GeometryUtil.Shape | null,
     layoutContext: Vtree.LayoutContext,
     forceNonFitting: boolean,
-  ): Task.Result<LayoutType.Column> {
+  ): Promise<LayoutType.Column> {
     // Don't apply exclusions from sibling partitions when the partition's
     // position or inline-size is unknown during layout:
     // - auto block-size with before-edge dependency: position is unknown
@@ -2112,135 +2068,125 @@ export class StyleInstance
         null,
       );
     const positionAtColumnStart = this.currentLayoutPosition.clone();
-    const frame: Task.Frame<LayoutType.Column> = Task.newFrame(
-      "createAndLayoutColumn",
-    );
     let column: LayoutType.Column;
-    frame
-      .loopWithFrame((loopFrame) => {
-        const layoutConstraint = this.createLayoutConstraint(
+    for (;;) {
+      const layoutConstraint = this.createLayoutConstraint(
+        columnPageFloatLayoutContext,
+      );
+      if (columnCount > 1) {
+        const columnContainer = this.viewport.document.createElement("div");
+        Base.setCSSProperty(columnContainer, "position", "absolute");
+        boxContainer.appendChild(columnContainer);
+        let columnLeft: number;
+        let columnTop: number;
+        let columnBoxWidth: number;
+        let columnBoxHeight: number;
+        if (layoutContainer.vertical) {
+          const columnY =
+            (layoutContainer.rtl
+              ? columnCount - currentColumnIndex - 1
+              : currentColumnIndex) *
+              (columnWidth + columnGap) +
+            layoutContainer.paddingTop;
+          const outerWidth = parseFloat(boxContainer.style.width);
+          columnLeft =
+            layoutContainer.paddingLeft + outerWidth - layoutContainer.width;
+          columnBoxWidth = layoutContainer.width;
+          columnTop = columnY;
+          columnBoxHeight = columnWidth;
+        } else {
+          const columnX =
+            (layoutContainer.rtl
+              ? columnCount - currentColumnIndex - 1
+              : currentColumnIndex) *
+              (columnWidth + columnGap) +
+            layoutContainer.paddingLeft;
+          columnLeft = columnX;
+          columnBoxWidth = columnWidth;
+          columnTop = layoutContainer.paddingTop;
+          columnBoxHeight = layoutContainer.height;
+        }
+        // Position the freshly created element before it is measured.
+        Base.setCSSProperty(columnContainer, "left", `${columnLeft}px`);
+        Base.setCSSProperty(columnContainer, "top", `${columnTop}px`);
+        column = new Layout.Column(
+          columnContainer,
+          layoutContext,
+          this.clientLayout,
+          layoutConstraint,
           columnPageFloatLayoutContext,
+          {
+            vertical: layoutContainer.vertical,
+            rtl: layoutContainer.rtl,
+            snapWidth: layoutContainer.snapWidth,
+            snapHeight: layoutContainer.snapHeight,
+            originX: offsetX,
+            originY: offsetY,
+            left: columnLeft,
+            top: columnTop,
+            width: columnBoxWidth,
+            height: columnBoxHeight,
+            marginLeft: 0,
+            marginRight: 0,
+            marginTop: 0,
+            marginBottom: 0,
+            borderLeft: 0,
+            borderRight: 0,
+            borderTop: 0,
+            borderBottom: 0,
+            paddingLeft: 0,
+            paddingRight: 0,
+            paddingTop: 0,
+            paddingBottom: 0,
+            borderBoxSizing: false,
+          },
+          innerShape,
+          dontApplyExclusions ? [] : [...exclusions],
+          this.flowRootFormattingContextFor(flowNameStr),
         );
-        if (columnCount > 1) {
-          const columnContainer = this.viewport.document.createElement("div");
-          Base.setCSSProperty(columnContainer, "position", "absolute");
-          boxContainer.appendChild(columnContainer);
-          let columnLeft: number;
-          let columnTop: number;
-          let columnBoxWidth: number;
-          let columnBoxHeight: number;
-          if (layoutContainer.vertical) {
-            const columnY =
-              (layoutContainer.rtl
-                ? columnCount - currentColumnIndex - 1
-                : currentColumnIndex) *
-                (columnWidth + columnGap) +
-              layoutContainer.paddingTop;
-            const outerWidth = parseFloat(boxContainer.style.width);
-            columnLeft =
-              layoutContainer.paddingLeft + outerWidth - layoutContainer.width;
-            columnBoxWidth = layoutContainer.width;
-            columnTop = columnY;
-            columnBoxHeight = columnWidth;
-          } else {
-            const columnX =
-              (layoutContainer.rtl
-                ? columnCount - currentColumnIndex - 1
-                : currentColumnIndex) *
-                (columnWidth + columnGap) +
-              layoutContainer.paddingLeft;
-            columnLeft = columnX;
-            columnBoxWidth = columnWidth;
-            columnTop = layoutContainer.paddingTop;
-            columnBoxHeight = layoutContainer.height;
+        // Issue #1842: columns after the first treat already-satisfied leading
+        // column breaks differently.
+        column.isNonFirstColumn = currentColumnIndex > 0;
+        column.forceNonfitting = forceNonFitting;
+      } else {
+        column = new Layout.Column(
+          boxContainer,
+          layoutContext,
+          this.clientLayout,
+          layoutConstraint,
+          columnPageFloatLayoutContext,
+          layoutContainer,
+          innerShape,
+          dontApplyExclusions ? [] : [...exclusions],
+          this.flowRootFormattingContextFor(flowNameStr),
+        );
+        // Single-column layout always behaves like the first column on a page.
+        column.isNonFirstColumn = false;
+      }
+      if ((column.vertical ? column.height : column.width) >= 0) {
+        // column.element.style.outline = "1px dotted green";
+        const columnContext = column.pageFloatLayoutContext;
+        await this.layoutColumn(column, flowNameStr);
+        if (!columnContext.isInvalidated()) {
+          columnContext.finish();
+        }
+        if (
+          column.pageFloatLayoutContext.isInvalidated() &&
+          !regionPageFloatLayoutContext.isInvalidated()
+        ) {
+          column.pageFloatLayoutContext.validate();
+          this.currentLayoutPosition = positionAtColumnStart.clone();
+          if (column.element !== boxContainer) {
+            boxContainer.removeChild(column.element);
           }
-          // Position the freshly created element before it is measured.
-          Base.setCSSProperty(columnContainer, "left", `${columnLeft}px`);
-          Base.setCSSProperty(columnContainer, "top", `${columnTop}px`);
-          column = new Layout.Column(
-            columnContainer,
-            layoutContext,
-            this.clientLayout,
-            layoutConstraint,
-            columnPageFloatLayoutContext,
-            {
-              vertical: layoutContainer.vertical,
-              rtl: layoutContainer.rtl,
-              snapWidth: layoutContainer.snapWidth,
-              snapHeight: layoutContainer.snapHeight,
-              originX: offsetX,
-              originY: offsetY,
-              left: columnLeft,
-              top: columnTop,
-              width: columnBoxWidth,
-              height: columnBoxHeight,
-              marginLeft: 0,
-              marginRight: 0,
-              marginTop: 0,
-              marginBottom: 0,
-              borderLeft: 0,
-              borderRight: 0,
-              borderTop: 0,
-              borderBottom: 0,
-              paddingLeft: 0,
-              paddingRight: 0,
-              paddingTop: 0,
-              paddingBottom: 0,
-              borderBoxSizing: false,
-            },
-            innerShape,
-            dontApplyExclusions ? [] : [...exclusions],
-            this.flowRootFormattingContextFor(flowNameStr),
-          );
-          // Issue #1842: columns after the first treat already-satisfied leading
-          // column breaks differently.
-          column.isNonFirstColumn = currentColumnIndex > 0;
-          column.forceNonfitting = forceNonFitting;
-        } else {
-          column = new Layout.Column(
-            boxContainer,
-            layoutContext,
-            this.clientLayout,
-            layoutConstraint,
-            columnPageFloatLayoutContext,
-            layoutContainer,
-            innerShape,
-            dontApplyExclusions ? [] : [...exclusions],
-            this.flowRootFormattingContextFor(flowNameStr),
-          );
-          // Single-column layout always behaves like the first column on a page.
-          column.isNonFirstColumn = false;
+          continue;
         }
-        if ((column.vertical ? column.height : column.width) >= 0) {
-          // column.element.style.outline = "1px dotted green";
-          const columnContext = column.pageFloatLayoutContext;
-          this.layoutColumn(column, flowNameStr).then(() => {
-            if (!columnContext.isInvalidated()) {
-              columnContext.finish();
-            }
-            if (
-              column.pageFloatLayoutContext.isInvalidated() &&
-              !regionPageFloatLayoutContext.isInvalidated()
-            ) {
-              column.pageFloatLayoutContext.validate();
-              this.currentLayoutPosition = positionAtColumnStart.clone();
-              if (column.element !== boxContainer) {
-                boxContainer.removeChild(column.element);
-              }
-              loopFrame.continueLoop();
-            } else {
-              loopFrame.breakLoop();
-            }
-          });
-        } else {
-          column.pageFloatLayoutContext.finish();
-          loopFrame.breakLoop();
-        }
-      })
-      .then(() => {
-        frame.finish(column);
-      });
-    return frame.result();
+      } else {
+        column.pageFloatLayoutContext.finish();
+      }
+      break;
+    }
+    return column;
   }
 
   getRegionPageFloatLayoutContext(
@@ -2263,7 +2209,7 @@ export class StyleInstance
     );
   }
 
-  layoutFlowColumnsWithBalancing(
+  async layoutFlowColumnsWithBalancing(
     page: Vtree.Page,
     boxInstance: PageMaster.PageBoxInstance,
     offsetX: number,
@@ -2273,7 +2219,7 @@ export class StyleInstance
     layoutContainer: Vtree.Container,
     flowNameStr: string,
     columnCount: number,
-  ): Task.Result<LayoutType.Column[] | null> {
+  ): Promise<LayoutType.Column[] | null> {
     const positionAtContainerStart = this.currentLayoutPosition.clone();
     const regionPageFloatLayoutContext = this.getRegionPageFloatLayoutContext(
       pagePageFloatLayoutContext,
@@ -2283,9 +2229,9 @@ export class StyleInstance
     );
     let isFirstTime = true;
 
-    const layoutColumns = () => {
+    const layoutColumns = async () => {
       this.currentLayoutPosition = positionAtContainerStart.clone();
-      return this.layoutFlowColumns(
+      const columns = await this.layoutFlowColumns(
         page,
         boxInstance,
         offsetX,
@@ -2297,59 +2243,46 @@ export class StyleInstance
         flowNameStr,
         columnCount,
         isFirstTime,
-      ).thenAsync((columns) => {
-        if (columns) {
-          return Task.newResult({
-            columns,
-            position: this.currentLayoutPosition,
-          });
-        } else {
-          return Task.newResult(null);
-        }
-      });
+      );
+      return columns ? { columns, position: this.currentLayoutPosition } : null;
     };
 
-    return layoutColumns().thenAsync((generatorResult) => {
-      if (!generatorResult) {
-        return Task.newResult(null);
-      }
-      if (columnCount <= 1) {
-        return Task.newResult(generatorResult.columns);
-      }
-      const columnFill =
-        (boxInstance.getProp(this, "column-fill") as Css.Ident) ||
-        Css.ident.balance;
-      const flowPosition =
-        this.currentLayoutPosition.flowPositions[flowNameStr];
-      Asserts.assert(flowPosition);
-      const columnBalancer = Columns.createColumnBalancer(
-        columnCount,
-        columnFill,
-        layoutColumns,
-        regionPageFloatLayoutContext,
-        layoutContainer,
-        generatorResult.columns,
-        flowPosition,
-      );
-      if (!columnBalancer) {
-        return Task.newResult(generatorResult.columns);
-      }
-      isFirstTime = false;
-      pagePageFloatLayoutContext.lock();
-      regionPageFloatLayoutContext.lock();
-      return columnBalancer
-        .balanceColumns(generatorResult)
-        .thenAsync((result) => {
-          pagePageFloatLayoutContext.unlock();
-          pagePageFloatLayoutContext.validate();
-          regionPageFloatLayoutContext.unlock();
-          this.currentLayoutPosition = result.position;
-          return Task.newResult(result.columns);
-        });
-    });
+    const generatorResult = await layoutColumns();
+    if (!generatorResult) {
+      return null;
+    }
+    if (columnCount <= 1) {
+      return generatorResult.columns;
+    }
+    const columnFill =
+      (boxInstance.getProp(this, "column-fill") as Css.Ident) ||
+      Css.ident.balance;
+    const flowPosition = this.currentLayoutPosition.flowPositions[flowNameStr];
+    Asserts.assert(flowPosition);
+    const columnBalancer = Columns.createColumnBalancer(
+      columnCount,
+      columnFill,
+      layoutColumns,
+      regionPageFloatLayoutContext,
+      layoutContainer,
+      generatorResult.columns,
+      flowPosition,
+    );
+    if (!columnBalancer) {
+      return generatorResult.columns;
+    }
+    isFirstTime = false;
+    pagePageFloatLayoutContext.lock();
+    regionPageFloatLayoutContext.lock();
+    const result = await columnBalancer.balanceColumns(generatorResult);
+    pagePageFloatLayoutContext.unlock();
+    pagePageFloatLayoutContext.validate();
+    regionPageFloatLayoutContext.unlock();
+    this.currentLayoutPosition = result.position;
+    return result.columns;
   }
 
-  layoutFlowColumns(
+  async layoutFlowColumns(
     page: Vtree.Page,
     boxInstance: PageMaster.PageBoxInstance,
     offsetX: number,
@@ -2361,9 +2294,7 @@ export class StyleInstance
     flowNameStr: string,
     columnCount: number,
     forceNonFitting: boolean,
-  ): Task.Result<LayoutType.Column[] | null> {
-    const frame: Task.Frame<LayoutType.Column[] | null> =
-      Task.newFrame("layoutFlowColumns");
+  ): Promise<LayoutType.Column[] | null> {
     const positionAtContainerStart = this.currentLayoutPosition.clone();
     // Save formatting context states so they can be restored on region-level
     // retry (e.g., when footnotes invalidate the page float context).
@@ -2416,75 +2347,65 @@ export class StyleInstance
     let columnIndex = 0;
     let column: LayoutType.Column | null = null;
     let columns: LayoutType.Column[] = [];
-    frame
-      .loopWithFrame((loopFrame) => {
-        this.createAndLayoutColumn(
-          boxInstance,
-          offsetX,
-          offsetY,
-          exclusions,
-          layoutContainer,
-          columnIndex++,
-          flowNameStr,
-          regionPageFloatLayoutContext,
-          columnCount,
-          columnGap,
-          columnWidth,
-          innerShape,
-          layoutContext,
-          forceNonFitting,
-        ).then((c) => {
-          if (pagePageFloatLayoutContext.isInvalidated()) {
-            columns = null;
-            loopFrame.breakLoop();
-            return;
+    for (;;) {
+      const c = await this.createAndLayoutColumn(
+        boxInstance,
+        offsetX,
+        offsetY,
+        exclusions,
+        layoutContainer,
+        columnIndex++,
+        flowNameStr,
+        regionPageFloatLayoutContext,
+        columnCount,
+        columnGap,
+        columnWidth,
+        innerShape,
+        layoutContext,
+        forceNonFitting,
+      );
+      if (pagePageFloatLayoutContext.isInvalidated()) {
+        columns = null;
+        break;
+      }
+      const forcedRegionBreak =
+        !!c.pageBreakType && c.pageBreakType !== "column";
+      if (
+        (forcedRegionBreak || columnIndex === columnCount) &&
+        !regionPageFloatLayoutContext.isInvalidated()
+      ) {
+        regionPageFloatLayoutContext.finish();
+      }
+      if (regionPageFloatLayoutContext.isInvalidated()) {
+        columnIndex = 0;
+        this.currentLayoutPosition = positionAtContainerStart.clone();
+        // Restore formatting context states on region-level retry
+        // (Issue #1663)
+        restoreFormattingContextStates(savedRegionFCStates);
+        regionPageFloatLayoutContext.validate();
+        if (regionPageFloatLayoutContext.isLocked()) {
+          columns = null;
+          break;
+        }
+        continue;
+      }
+      column = c;
+      columns[columnIndex - 1] = column;
+      if (column.pageBreakType) {
+        if (column.pageBreakType != "column") {
+          // skip remaining columns
+          columnIndex = columnCount;
+          if (column.pageBreakType != "region") {
+            // skip remaining regions
+            this.pageBreaks[flowNameStr] = true;
           }
-          const forcedRegionBreak =
-            !!c.pageBreakType && c.pageBreakType !== "column";
-          if (
-            (forcedRegionBreak || columnIndex === columnCount) &&
-            !regionPageFloatLayoutContext.isInvalidated()
-          ) {
-            regionPageFloatLayoutContext.finish();
-          }
-          if (regionPageFloatLayoutContext.isInvalidated()) {
-            columnIndex = 0;
-            this.currentLayoutPosition = positionAtContainerStart.clone();
-            // Restore formatting context states on region-level retry
-            // (Issue #1663)
-            restoreFormattingContextStates(savedRegionFCStates);
-            regionPageFloatLayoutContext.validate();
-            if (regionPageFloatLayoutContext.isLocked()) {
-              columns = null;
-              loopFrame.breakLoop();
-            } else {
-              loopFrame.continueLoop();
-            }
-            return;
-          }
-          column = c;
-          columns[columnIndex - 1] = column;
-          if (column.pageBreakType) {
-            if (column.pageBreakType != "column") {
-              // skip remaining columns
-              columnIndex = columnCount;
-              if (column.pageBreakType != "region") {
-                // skip remaining regions
-                this.pageBreaks[flowNameStr] = true;
-              }
-            }
-          }
-          if (columnIndex < columnCount) {
-            loopFrame.continueLoop();
-          } else {
-            loopFrame.breakLoop();
-          }
-        });
-      })
-      .then(() => {
-        frame.finish(columns);
-      });
-    return frame.result();
+        }
+      }
+      if (columnIndex >= columnCount) {
+        break;
+      }
+    }
+    return columns;
   }
 
   private openPageBox(
@@ -2564,12 +2485,12 @@ export class StyleInstance
   }
 
   /** Takes no flow, the one part that can run before the context is attached. */
-  private layoutGeneratedContent(
+  private async layoutGeneratedContent(
     page: Vtree.Page,
     boxInstance: PageMaster.PageBoxInstance,
     opened: OpenedPageBox,
     parentContainer: HTMLElement,
-  ): Task.Result<boolean> {
+  ): Promise<boolean> {
     const boxContainer = opened.boxContainer;
     const fetchers: TaskUtil.Fetcher<string>[] = [];
     const contentVal = boxInstance.getProp(this, "content");
@@ -2666,19 +2587,20 @@ export class StyleInstance
         this.faces,
       );
     }
-    return fetchers.length
-      ? waitForFetchersResult(fetchers).thenReturn(true)
-      : Task.newResult(true);
+    if (fetchers.length) {
+      await TaskUtil.waitForFetchers(fetchers);
+    }
+    return true;
   }
 
-  private layoutPageBoxContent(
+  private async layoutPageBoxContent(
     page: Vtree.Page,
     boxInstance: PageMaster.PageBoxInstance,
     opened: OpenedPageBox,
     parentContainer: HTMLElement,
     exclusions: GeometryUtil.Shape[],
     pagePageFloatLayoutContext: PageFloats.AttachedPageFloatLayoutContext,
-  ): Task.Result<boolean> {
+  ): Promise<boolean> {
     const boxContainer = opened.boxContainer;
     const flowName = opened.flowName;
     if (!flowName || !flowName.isIdent()) {
@@ -2690,14 +2612,11 @@ export class StyleInstance
       );
     }
     if (!this.pageBreaks[flowName.toString()]) {
-      const innerFrame: Task.Frame<boolean> = Task.newFrame(
-        "layoutPageBoxContent.inner",
-      );
       const flowNameStr = flowName.toString();
 
       // for now only a single column in vertical case
       const columnCount = boxInstance.getPropAsNumber(this, "column-count");
-      this.layoutFlowColumnsWithBalancing(
+      const columns = await this.layoutFlowColumnsWithBalancing(
         page,
         boxInstance,
         opened.offsetX,
@@ -2707,34 +2626,32 @@ export class StyleInstance
         opened.container,
         flowNameStr,
         columnCount,
-      ).then((columns) => {
-        if (!pagePageFloatLayoutContext.isInvalidated()) {
-          const column = columns[0];
-          Asserts.assert(column);
-          if (column.element === boxContainer) {
-            opened.container = column;
-          }
-          opened.container.computedBlockSize = Math.max(
-            ...columns.map((c) => c.computedBlockSize),
-          );
-          boxInstance.finishContainer(
-            this,
-            opened.container,
-            page,
-            column,
-            columnCount,
-            this.clientLayout,
-            this.faces,
-          );
-          const flowPosition =
-            this.currentLayoutPosition.flowPositions[flowNameStr];
-          if (flowPosition && flowPosition.breakAfter === "region") {
-            flowPosition.breakAfter = null;
-          }
+      );
+      if (!pagePageFloatLayoutContext.isInvalidated()) {
+        const column = columns[0];
+        Asserts.assert(column);
+        if (column.element === boxContainer) {
+          opened.container = column;
         }
-        innerFrame.finish(true);
-      });
-      return innerFrame.result();
+        opened.container.computedBlockSize = Math.max(
+          ...columns.map((c) => c.computedBlockSize),
+        );
+        boxInstance.finishContainer(
+          this,
+          opened.container,
+          page,
+          column,
+          columnCount,
+          this.clientLayout,
+          this.faces,
+        );
+        const flowPosition =
+          this.currentLayoutPosition.flowPositions[flowNameStr];
+        if (flowPosition && flowPosition.breakAfter === "region") {
+          flowPosition.breakAfter = null;
+        }
+      }
+      return true;
     }
     if (!pagePageFloatLayoutContext.isInvalidated()) {
       boxInstance.finishContainer(
@@ -2747,7 +2664,7 @@ export class StyleInstance
         this.faces,
       );
     }
-    return Task.newResult(true);
+    return true;
   }
 
   /**
@@ -2776,54 +2693,42 @@ export class StyleInstance
     return true;
   }
 
-  private layoutPageBoxChildren(
+  private async layoutPageBoxChildren(
     page: Vtree.Page,
     boxInstance: PageMaster.PageBoxInstance,
     opened: OpenedPageBox,
     exclusions: GeometryUtil.Shape[],
     pagePageFloatLayoutContext: PageFloats.AttachedPageFloatLayoutContext,
     skip: PageMaster.PageBoxInstance | null = null,
-  ): Task.Result<boolean> {
-    const frame: Task.Frame<boolean> = Task.newFrame("layoutPageBoxChildren");
+  ): Promise<boolean> {
     const forwardOrderInLayout = opened.forwardOrderInLayout;
     let i = forwardOrderInLayout ? 0 : boxInstance.children.length - 1;
-    frame
-      .loop(() => {
-        while (i >= 0 && i < boxInstance.children.length) {
-          const child = boxInstance.children[forwardOrderInLayout ? i++ : i--];
-          if (child === skip) {
-            continue;
-          }
-          const r = this.layoutContainer(
-            page,
-            child,
-            opened.boxContainer,
-            opened.offsetX,
-            opened.offsetY,
-            exclusions,
-            pagePageFloatLayoutContext,
-          );
-          if (r.isPending()) {
-            return r.thenAsync(() =>
-              Task.newResult(!pagePageFloatLayoutContext.isInvalidated()),
-            );
-          } else if (pagePageFloatLayoutContext.isInvalidated()) {
-            break;
-          }
-        }
-        return Task.newResult(false);
-      })
-      .then(() => {
-        frame.finish(true);
-      });
-    return frame.result();
+    while (i >= 0 && i < boxInstance.children.length) {
+      const child = boxInstance.children[forwardOrderInLayout ? i++ : i--];
+      if (child === skip) {
+        continue;
+      }
+      await this.layoutContainer(
+        page,
+        child,
+        opened.boxContainer,
+        opened.offsetX,
+        opened.offsetY,
+        exclusions,
+        pagePageFloatLayoutContext,
+      );
+      if (pagePageFloatLayoutContext.isInvalidated()) {
+        break;
+      }
+    }
+    return true;
   }
 
   /**
    * The context becomes attached at the page area. Boxes reached before that
    * point cannot take a flow, having no container for its floats.
    */
-  private layoutPageAreaEstablishingContainer(
+  private async layoutPageAreaEstablishingContainer(
     page: Vtree.Page,
     boxInstance: PageMaster.PageBoxInstance & PageMaster.PageAreaEstablishing,
     parentContainer: HTMLElement,
@@ -2831,7 +2736,7 @@ export class StyleInstance
     offsetY: number,
     exclusions: GeometryUtil.Shape[],
     pagePageFloatLayoutContext: PageFloats.UnattachedPageFloatLayoutContext,
-  ): Task.Result<PageFloats.AttachedPageFloatLayoutContext> {
+  ): Promise<PageFloats.AttachedPageFloatLayoutContext> {
     // No `enabled` test here. A page master's condition was evaluated by
     // selectPageMaster. A page rule master can carry one through the `@page`
     // cascade, but EPUB Adaptive Layout §3.4.7 applies `-epubx-enabled` to
@@ -2839,8 +2744,6 @@ export class StyleInstance
     // that declaration has no defined rendering and base's skip is not a
     // behavior to keep. The boxes below take geometry only.
     boxInstance.reset();
-    const frame: Task.Frame<PageFloats.AttachedPageFloatLayoutContext> =
-      Task.newFrame("layoutPageAreaEstablishingContainer");
     const opened = this.openPageBox(
       page,
       boxInstance,
@@ -2854,87 +2757,78 @@ export class StyleInstance
       const attached = pagePageFloatLayoutContext.withContainer(
         opened.container,
       );
-      this.layoutPageBoxContent(
+      await this.layoutPageBoxContent(
         page,
         boxInstance,
         opened,
         parentContainer,
         exclusions,
         attached,
-      ).then(() => {
-        if (
-          attached.isInvalidated() ||
-          !this.excludeOrRemovePageBox(
-            boxInstance,
-            opened,
-            parentContainer,
-            exclusions,
-          )
-        ) {
-          frame.finish(attached);
-          return;
-        }
-        this.layoutPageBoxChildren(
-          page,
+      );
+      if (
+        attached.isInvalidated() ||
+        !this.excludeOrRemovePageBox(
           boxInstance,
           opened,
+          parentContainer,
           exclusions,
-          attached,
-        ).then(() => {
-          frame.finish(attached);
-        });
-      });
-      return frame.result();
+        )
+      ) {
+        return attached;
+      }
+      await this.layoutPageBoxChildren(
+        page,
+        boxInstance,
+        opened,
+        exclusions,
+        attached,
+      );
+      return attached;
     }
-    this.layoutGeneratedContent(
+    await this.layoutGeneratedContent(
       page,
       boxInstance,
       opened,
       parentContainer,
-    ).then(() => {
-      // No invalidation test: generated content cannot invalidate a context.
-      // The result is unused. A box on the way down holds the establishing
-      // child, and is never the empty box this removes.
-      this.excludeOrRemovePageBox(
-        boxInstance,
-        opened,
-        parentContainer,
-        exclusions,
-      );
-      // base laid this child out first as well.
-      this.layoutPageAreaEstablishingContainer(
-        page,
-        establishingChild,
-        opened.boxContainer,
-        opened.offsetX,
-        opened.offsetY,
-        exclusions,
-        pagePageFloatLayoutContext,
-      ).then((attached) => {
-        if (attached.isInvalidated()) {
-          // base broke out of the children loop here, before the margin boxes.
-          frame.finish(attached);
-          return;
-        }
-        this.layoutPageBoxChildren(
-          page,
-          boxInstance,
-          opened,
-          exclusions,
-          attached,
-          establishingChild,
-        ).then(() => {
-          frame.finish(attached);
-        });
-      });
-    });
-    return frame.result();
+    );
+    // No invalidation test: generated content cannot invalidate a context.
+    // The result is unused. A box on the way down holds the establishing
+    // child, and is never the empty box this removes.
+    this.excludeOrRemovePageBox(
+      boxInstance,
+      opened,
+      parentContainer,
+      exclusions,
+    );
+    // base laid this child out first as well.
+    const attached = await this.layoutPageAreaEstablishingContainer(
+      page,
+      establishingChild,
+      opened.boxContainer,
+      opened.offsetX,
+      opened.offsetY,
+      exclusions,
+      pagePageFloatLayoutContext,
+    );
+    if (attached.isInvalidated()) {
+      // base broke out of the children loop here, before the margin boxes.
+      return attached;
+    }
+    await this.layoutPageBoxChildren(
+      page,
+      boxInstance,
+      opened,
+      exclusions,
+      attached,
+      establishingChild,
+    );
+    return attached;
   }
 
   /**
    * @return holding true
    */
-  layoutContainer(
+  async layoutContainer(
     page: Vtree.Page,
     boxInstance: PageMaster.PageBoxInstance,
     parentContainer: HTMLElement,
@@ -2942,13 +2836,12 @@ export class StyleInstance
     offsetY: number,
     exclusions: GeometryUtil.Shape[],
     pagePageFloatLayoutContext: PageFloats.AttachedPageFloatLayoutContext,
-  ): Task.Result<boolean> {
+  ): Promise<boolean> {
     boxInstance.reset();
     const enabled = boxInstance.getProp(this, "enabled");
     if (enabled && enabled !== Css.ident._true) {
-      return Task.newResult(true);
+      return true;
     }
-    const frame: Task.Frame<boolean> = Task.newFrame("layoutContainer");
     const opened = this.openPageBox(
       page,
       boxInstance,
@@ -2957,41 +2850,37 @@ export class StyleInstance
       offsetY,
       exclusions,
     );
-    this.layoutPageBoxContent(
+    await this.layoutPageBoxContent(
       page,
       boxInstance,
       opened,
       parentContainer,
       exclusions,
       pagePageFloatLayoutContext,
-    ).then(() => {
-      if (pagePageFloatLayoutContext.isInvalidated()) {
-        frame.finish(true);
-        return;
-      }
-      if (
-        !this.excludeOrRemovePageBox(
-          boxInstance,
-          opened,
-          parentContainer,
-          exclusions,
-        )
-      ) {
-        frame.finish(true);
-        return;
-      }
-      this.layoutPageBoxChildren(
-        page,
+    );
+    if (pagePageFloatLayoutContext.isInvalidated()) {
+      return true;
+    }
+    if (
+      !this.excludeOrRemovePageBox(
         boxInstance,
         opened,
+        parentContainer,
         exclusions,
-        pagePageFloatLayoutContext,
-      ).then(() => {
-        frame.finish(true);
-      });
-    });
-    return frame.result();
+      )
+    ) {
+      return true;
+    }
+    await this.layoutPageBoxChildren(
+      page,
+      boxInstance,
+      opened,
+      exclusions,
+      pagePageFloatLayoutContext,
+    );
+    return true;
   }
+
   processLinger(): void {
     const pageNumber = this.currentLayoutPosition.page;
     for (const flowName in this.currentLayoutPosition.flowPositions) {
@@ -3091,10 +2980,30 @@ export class StyleInstance
     }
   }
 
-  layoutNextPage(
+  /**
+   * Lays out the next page. If `signal` is aborted while the layout is going
+   * on, the layout is stopped and the Promise is rejected with its reason.
+   */
+  async layoutNextPage(
     page: Vtree.Page,
     cp?: Vtree.LayoutPosition | null,
-  ): Task.Result<Vtree.LayoutPosition | null> {
+    signal?: AbortSignal,
+  ): Promise<Vtree.LayoutPosition | null> {
+    this.layoutSignal = signal;
+    try {
+      return await this.layoutNextPageInner(page, cp);
+    } finally {
+      this.layoutSignal = undefined;
+    }
+  }
+
+  /** The signal that stops the layout that is going on (see layoutNextPage). */
+  private layoutSignal: AbortSignal | undefined;
+
+  private async layoutNextPageInner(
+    page: Vtree.Page,
+    cp?: Vtree.LayoutPosition | null,
+  ): Promise<Vtree.LayoutPosition | null> {
     // TOC box is special page container, no pagination
     const isTocBox = page.container === page.bleedBox;
 
@@ -3203,7 +3112,7 @@ export class StyleInstance
     const pageMaster = this.selectPageMaster(cascadedPageStyle);
     if (!pageMaster) {
       // end of primary content
-      return Task.newResult<Vtree.LayoutPosition | null>(null);
+      return null;
     }
     let bleedBoxPaddingEdge = 0;
     if (!isTocBox) {
@@ -3283,76 +3192,67 @@ export class StyleInstance
       null,
       page.side,
     );
-    const frame: Task.Frame<Vtree.LayoutPosition | null> =
-      Task.newFrame("layoutNextPage");
     let attachedPageFloatLayoutContext: PageFloats.AttachedPageFloatLayoutContext | null =
       null;
-    frame
-      .loopWithFrame((loopFrame) => {
-        // this.layoutPageAreaEstablishingContainer(page, pageMaster, page.bleedBox, bleedBoxPaddingEdge, bleedBoxPaddingEdge+1, // Compensate 'top: -1px' on page master
-        this.layoutPageAreaEstablishingContainer(
-          page,
-          pageMaster,
-          page.bleedBox,
-          bleedBoxPaddingEdge,
-          bleedBoxPaddingEdge,
-          [],
-          pageFloatLayoutContext,
-        ).then((attached) => {
-          attachedPageFloatLayoutContext = attached;
-          if (!pageFloatLayoutContext.isInvalidated()) {
-            attached.finish();
-          }
-          if (pageFloatLayoutContext.isInvalidated()) {
-            this.currentLayoutPosition = this.layoutPositionAtPageStart.clone();
-            // Restore formatting context states on page-level retry
-            // (Issue #1663)
-            restoreFormattingContextStates(savedPageFCStates);
-            pageFloatLayoutContext.validate();
-            // Clear bleedBox children before retry to avoid duplicate page-box elements
-            while (page.bleedBox.lastChild) {
-              page.bleedBox.removeChild(page.bleedBox.lastChild);
-            }
-            loopFrame.continueLoop();
-          } else {
-            loopFrame.breakLoop();
-          }
-        });
-      })
-      .then(() => {
-        page.pageFloatLayoutContext = attachedPageFloatLayoutContext;
-        pageMaster.adjustPageLayout(this, page, this.clientLayout);
-        if (!isTocBox) {
-          this.processLinger();
-          cp = this.currentLayoutPosition;
-          this.checkRepeatedInvalidPageArea(cp);
-          Object.keys(cp.flowPositions).forEach((flowName) => {
-            const flowPosition = cp.flowPositions[flowName];
-            const breakAfter = flowPosition.breakAfter;
-            if (
-              breakAfter &&
-              (breakAfter === "page" || !this.matchPageSide(breakAfter))
-            ) {
-              flowPosition.breakAfter = null;
-            }
-          });
-        }
-        this.currentLayoutPosition = this.layoutPositionAtPageStart = null;
-        cp.highestSeenOffset = this.styler.getReachedOffset();
-        const triggers = this.style.store.getTriggersForDoc(this.xmldoc);
-        page.finish(triggers, this.clientLayout);
-        if (attachedPageFloatLayoutContext) {
-          releaseBreakPositions(attachedPageFloatLayoutContext);
-        }
+    for (;;) {
+      // this.layoutPageAreaEstablishingContainer(page, pageMaster, page.bleedBox, bleedBoxPaddingEdge, bleedBoxPaddingEdge+1, // Compensate 'top: -1px' on page master
+      const attached = await this.layoutPageAreaEstablishingContainer(
+        page,
+        pageMaster,
+        page.bleedBox,
+        bleedBoxPaddingEdge,
+        bleedBoxPaddingEdge,
+        [],
+        pageFloatLayoutContext,
+      );
+      attachedPageFloatLayoutContext = attached;
+      if (!pageFloatLayoutContext.isInvalidated()) {
+        attached.finish();
+      }
+      if (!pageFloatLayoutContext.isInvalidated()) {
+        break;
+      }
+      this.currentLayoutPosition = this.layoutPositionAtPageStart.clone();
+      // Restore formatting context states on page-level retry
+      // (Issue #1663)
+      restoreFormattingContextStates(savedPageFCStates);
+      pageFloatLayoutContext.validate();
+      // Clear bleedBox children before retry to avoid duplicate page-box elements
+      while (page.bleedBox.lastChild) {
+        page.bleedBox.removeChild(page.bleedBox.lastChild);
+      }
+    }
+    page.pageFloatLayoutContext = attachedPageFloatLayoutContext;
+    pageMaster.adjustPageLayout(this, page, this.clientLayout);
+    if (!isTocBox) {
+      this.processLinger();
+      cp = this.currentLayoutPosition;
+      this.checkRepeatedInvalidPageArea(cp);
+      Object.keys(cp.flowPositions).forEach((flowName) => {
+        const flowPosition = cp.flowPositions[flowName];
+        const breakAfter = flowPosition.breakAfter;
         if (
-          this.noMorePrimaryFlows(cp) &&
-          !this.hasActiveRootPageFloatLayoutContext()
+          breakAfter &&
+          (breakAfter === "page" || !this.matchPageSide(breakAfter))
         ) {
-          cp = null;
+          flowPosition.breakAfter = null;
         }
-        frame.finish(cp);
       });
-    return frame.result();
+    }
+    this.currentLayoutPosition = this.layoutPositionAtPageStart = null;
+    cp.highestSeenOffset = this.styler.getReachedOffset();
+    const triggers = this.style.store.getTriggersForDoc(this.xmldoc);
+    page.finish(triggers, this.clientLayout);
+    if (attachedPageFloatLayoutContext) {
+      releaseBreakPositions(attachedPageFloatLayoutContext);
+    }
+    if (
+      this.noMorePrimaryFlows(cp) &&
+      !this.hasActiveRootPageFloatLayoutContext()
+    ) {
+      cp = null;
+    }
+    return cp;
   }
 
   /**

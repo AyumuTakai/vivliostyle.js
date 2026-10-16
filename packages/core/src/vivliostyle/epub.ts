@@ -36,7 +36,6 @@ import * as OPS from "./ops";
 import * as Plugin from "./plugin";
 import * as SemanticFootnote from "./semantic-footnote";
 import * as Task from "./task";
-import { fromPromise, runLegacy } from "./task-bridge";
 import { sleep } from "./task-util";
 import * as Toc from "./toc";
 import * as Vgen from "./vgen";
@@ -2828,11 +2827,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
         inCounterResolveScopeAtStart,
       );
 
-      pos = await runLegacy(
-        () => viewItem.instance.layoutNextPage(page, pos),
-        "layoutNextPage",
-        signal,
-      );
+      pos = await viewItem.instance.layoutNextPage(page, pos, signal);
       if (!pos) {
         // A rerender can make the final page move to an earlier slot. Remove
         // stale following pages and their saved starts before storing the new

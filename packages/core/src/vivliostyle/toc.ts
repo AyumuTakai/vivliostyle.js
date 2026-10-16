@@ -25,8 +25,6 @@ import * as Css from "./css";
 import * as Exprs from "./exprs";
 import * as Font from "./font";
 import * as OPS from "./ops";
-import * as Task from "./task";
-import { fromPromise, runLegacy } from "./task-bridge";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
 import * as XmlDoc from "./xml-doc";
@@ -303,10 +301,7 @@ export class TOCView implements Vgen.CustomRendererFactory {
       null,
       null,
     );
-    await runLegacy(
-      () => instance.layoutNextPage(page, null),
-      "layoutNextPage",
-    );
+    await instance.layoutNextPage(page, null);
     this.setAutoHeight(elem, 2);
     return page;
   }

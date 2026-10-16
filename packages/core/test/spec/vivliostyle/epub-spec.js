@@ -1026,7 +1026,7 @@ describe("epub", function () {
             pushPageNumberContext: function () {},
             restorePageNumberContextDepth: function () {},
             layoutNextPage: function () {
-              return adapt_task.newResult(null);
+              return Promise.resolve(null);
             },
           },
         };
@@ -1186,7 +1186,7 @@ describe("epub", function () {
             pushPageNumberContext: function () {},
             restorePageNumberContextDepth: restorePageNumberContext,
             layoutNextPage: function () {
-              return adapt_task.newResult(null);
+              return Promise.resolve(null);
             },
           },
         };
@@ -2240,7 +2240,7 @@ describe("epub", function () {
         return 50;
       };
       viewItem.instance.layoutNextPage = function () {
-        return adapt_task.newResult({ page: 1 });
+        return Promise.resolve({ page: 1 });
       };
 
       adapt_task.start(function () {

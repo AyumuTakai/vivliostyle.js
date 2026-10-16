@@ -22,7 +22,6 @@ import * as Base from "./base";
 import * as Css from "./css";
 import * as MathUtil from "./math-util";
 import * as PageFloats from "./page-floats";
-import * as Task from "./task";
 import * as Vtree from "./vtree";
 import { Layout } from "./types";
 
@@ -32,7 +31,7 @@ export type ColumnLayoutResult = {
   columnPageFloatLayoutContexts?: PageFloats.AttachedPageFloatLayoutContext[];
 };
 
-export type ColumnGenerator = () => Task.Result<ColumnLayoutResult | null>;
+export type ColumnGenerator = () => Promise<ColumnLayoutResult | null>;
 
 export class ColumnBalancingTrialResult {
   constructor(
@@ -68,12 +67,9 @@ export abstract class ColumnBalancer {
     this.originalContainerBlockSize = getBlockSize(layoutContainer);
   }
 
-  balanceColumns(
+  async balanceColumns(
     layoutResult: ColumnLayoutResult,
-  ): Task.Result<ColumnLayoutResult> {
-    const frame: Task.Frame<ColumnLayoutResult> = Task.newFrame(
-      "ColumnBalancer#balanceColumns",
-    );
+  ): Promise<ColumnLayoutResult> {
     // Suppress block-size adjustment during column balancing trials so trial
     // break positions are not affected by block-end floats. (Issue #1787,
     // #1826)
@@ -85,38 +81,27 @@ export abstract class ColumnBalancer {
     this.savePageFloatLayoutContexts(layoutResult);
     this.layoutContainer.clear();
     const candidates = [this.createTrialResult(layoutResult)];
-    frame
-      .loopWithFrame((loopFrame) => {
-        if (!this.hasNextCandidate(candidates)) {
-          loopFrame.breakLoop();
-          return;
-        }
-        this.updateCondition(candidates);
-        this.columnGenerator().then((layoutResult) => {
-          this.savePageFloatLayoutContexts(layoutResult);
-          this.layoutContainer.clear();
-          if (!layoutResult) {
-            loopFrame.breakLoop();
-            return;
-          }
-          candidates.push(this.createTrialResult(layoutResult));
-          loopFrame.continueLoop();
-        });
-      })
-      .then(() => {
-        const result = candidates.reduce(
-          (prev, curr) => (curr.penalty < prev.penalty ? curr : prev),
-          candidates[0],
-        );
-        this.layoutContainer.element.removeAttribute(
-          "data-vivliostyle-in-column-balancing",
-        );
-        this.restoreContents(result.layoutResult);
-        this.tightenColumnBlockSizes(result.layoutResult.columns);
-        this.postBalance();
-        frame.finish(result.layoutResult);
-      });
-    return frame.result();
+    while (this.hasNextCandidate(candidates)) {
+      this.updateCondition(candidates);
+      const trialResult = await this.columnGenerator();
+      this.savePageFloatLayoutContexts(trialResult);
+      this.layoutContainer.clear();
+      if (!trialResult) {
+        break;
+      }
+      candidates.push(this.createTrialResult(trialResult));
+    }
+    const result = candidates.reduce(
+      (prev, curr) => (curr.penalty < prev.penalty ? curr : prev),
+      candidates[0],
+    );
+    this.layoutContainer.element.removeAttribute(
+      "data-vivliostyle-in-column-balancing",
+    );
+    this.restoreContents(result.layoutResult);
+    this.tightenColumnBlockSizes(result.layoutResult.columns);
+    this.postBalance();
+    return result.layoutResult;
   }
 
   private createTrialResult(
