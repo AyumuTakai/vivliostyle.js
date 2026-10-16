@@ -45,8 +45,7 @@ export function asActiveState(
     : null;
 }
 
-export interface RenderedActiveLayoutIteratorState
-  extends ActiveLayoutIteratorState {
+export interface RenderedActiveLayoutIteratorState extends ActiveLayoutIteratorState {
   get nodeContext(): Vtree.RenderedNodeContext;
   set nodeContext(nodeContext: Vtree.NodeContext | null);
 }

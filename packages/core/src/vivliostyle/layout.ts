@@ -1783,7 +1783,7 @@ export class Column extends VtreeImpl.Container implements Layout.Column {
       return result;
     }
     let failed = false;
-    for (let i = 0; i < continuations.length; ) {
+    for (let i = 0; i < continuations.length;) {
       const c = continuations[i];
       const floatChunkPosition = new VtreeImpl.ChunkPosition(c.nodePosition);
       const prevRootViewNodeCount = floatArea.getRootViewNodeCount();
@@ -5685,8 +5685,7 @@ export class PageFloatArea extends Column implements Layout.PageFloatArea {
       const display =
         element.ownerDocument.defaultView?.getComputedStyle(element).display;
       const nextElement = this.rootViewNodes[index + 1] as
-        | HTMLElement
-        | undefined;
+        HTMLElement | undefined;
       const nextDisplay =
         nextElement?.ownerDocument.defaultView?.getComputedStyle(
           nextElement,

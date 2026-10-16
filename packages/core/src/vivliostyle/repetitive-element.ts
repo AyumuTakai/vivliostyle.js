@@ -684,7 +684,9 @@ export class RepetitiveElementsOwnerLayoutConstraint
   }
 }
 
-export class RepetitiveElementsOwnerLayoutRetryer extends LayoutRetryers.AbstractLayoutRetryer {
+export class RepetitiveElementsOwnerLayoutRetryer
+  extends LayoutRetryers.AbstractLayoutRetryer
+{
   constructor(
     public readonly formattingContext: RepetitiveElement.RepetitiveElementsOwnerFormattingContext,
     private readonly processor: RepetitiveElementsOwnerLayoutProcessor,
@@ -740,7 +742,7 @@ export class EntireBlockLayoutStrategy extends LayoutUtil.EdgeSkipper {
         case "header":
           if (!repetitiveElements.isHeaderRegistered()) {
             repetitiveElements.setHeaderNodeContext(nodeContext);
-            return;
+            return undefined;
           } else {
             nodeContext.repeatOnBreak = "none";
           }
@@ -748,7 +750,7 @@ export class EntireBlockLayoutStrategy extends LayoutUtil.EdgeSkipper {
         case "footer":
           if (!repetitiveElements.isFooterRegistered()) {
             repetitiveElements.setFooterNodeContext(nodeContext);
-            return;
+            return undefined;
           } else {
             nodeContext.repeatOnBreak = "none";
           }
@@ -780,7 +782,7 @@ export class EntireBlockLayoutStrategy extends LayoutUtil.EdgeSkipper {
       nodeContext.repeatOnBreak === "header" ||
       nodeContext.repeatOnBreak === "footer"
     ) {
-      return;
+      return undefined;
     } else {
       return LayoutUtil.EdgeSkipper.prototype.afterNonInlineElementNode.call(
         this,

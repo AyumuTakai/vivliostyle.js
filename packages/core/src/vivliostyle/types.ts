@@ -24,15 +24,10 @@ import * as GeometryUtil from "./geometry-util";
 import * as TaskUtil from "./task-util";
 
 export type FormattingContextType =
-  | "Block"
-  | "RepetitiveElementsOwner"
-  | "Table";
+  "Block" | "RepetitiveElementsOwner" | "Table";
 
 export type FragmentLayoutConstraintType =
-  | "AfterIfContinue"
-  | "EntireTable"
-  | "RepetitiveElementsOwner"
-  | "TableRow";
+  "AfterIfContinue" | "EntireTable" | "RepetitiveElementsOwner" | "TableRow";
 
 export namespace CssCascade {
   export type ElementStyle = { [key: string]: any };
@@ -784,8 +779,7 @@ export namespace PageFloats {
   }
 
   /** Where a float goes can only be asked of a context bound to a container. */
-  export interface AttachedPageFloatLayoutContext
-    extends ParentPageFloatLayoutContext {
+  export interface AttachedPageFloatLayoutContext extends ParentPageFloatLayoutContext {
     readonly container: Vtree.Container;
     getPageFloatLayoutContext(
       floatReference: FloatReference,

@@ -122,7 +122,9 @@ export class TableCaptionView {
   ) {}
 }
 
-export class BetweenTableRowBreakPosition extends BreakPosition.EdgeBreakPosition {
+export class BetweenTableRowBreakPosition
+  extends BreakPosition.EdgeBreakPosition
+{
   private formattingContext: TableFormattingContext;
 
   acceptableCellBreakPositions: Layout.BreakPositionAndNodeContext[] | null =
@@ -226,7 +228,9 @@ export class BetweenTableRowBreakPosition extends BreakPosition.EdgeBreakPositio
   }
 }
 
-export class InsideTableRowBreakPosition extends BreakPosition.AbstractBreakPosition {
+export class InsideTableRowBreakPosition
+  extends BreakPosition.AbstractBreakPosition
+{
   acceptableCellBreakPositions: Layout.BreakPositionAndNodeContext[] | null =
     null;
 
@@ -838,13 +842,13 @@ export class EntireTableLayoutStrategy extends LayoutUtil.EdgeSkipper {
           this.inHeaderOrFooter = true;
           repetitiveElements.setHeaderNodeContext(nodeContext);
         }
-        return;
+        return undefined;
       case "table-footer-group":
         if (!repetitiveElements.isFooterRegistered()) {
           this.inHeaderOrFooter = true;
           repetitiveElements.setFooterNodeContext(nodeContext);
         }
-        return;
+        return undefined;
       case "table-row":
         if (!this.inHeaderOrFooter) {
           this.inRow = true;
@@ -895,7 +899,7 @@ export class EntireTableLayoutStrategy extends LayoutUtil.EdgeSkipper {
         case "table-footer-group":
           if (this.inHeaderOrFooter) {
             this.inHeaderOrFooter = false;
-            return;
+            return undefined;
           }
           break;
         case "table-row":
@@ -2407,7 +2411,9 @@ export class EntireTableLayoutConstraint
   }
 }
 
-export class LayoutFragmentedTable extends RepetitiveElementImpl.LayoutFragmentedBlock {
+export class LayoutFragmentedTable
+  extends RepetitiveElementImpl.LayoutFragmentedBlock
+{
   constructor(
     formattingContext: TableFormattingContext,
     public readonly processor: TableLayoutProcessor,

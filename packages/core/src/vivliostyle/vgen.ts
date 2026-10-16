@@ -1322,8 +1322,7 @@ export class ViewFactory
     }
     if (currentDeclaresFontSize && !fontSizeFromOwnStyle) {
       const inheritedFontSize = props["font-size"] as
-        | CssCascade.CascadeValue
-        | undefined;
+        CssCascade.CascadeValue | undefined;
       // The font size comes from a declaration that is not in the element's
       // own cascaded style, e.g. a region rule such as
       // `aside[role="doc-footnote"]:footnote-content { font-size: 0.9em }`.
@@ -1344,8 +1343,7 @@ export class ViewFactory
     }
     if (currentDeclaresLineHeight && !lineHeightFromOwnStyle) {
       const inheritedLineHeight = props["line-height"] as
-        | CssCascade.CascadeValue
-        | undefined;
+        CssCascade.CascadeValue | undefined;
       // A line height that uses the `lh` unit needs the inherited line height to
       // resolve the unit, but when the declaration comes from outside the
       // element's own cascaded style, e.g. a region rule such as
@@ -1364,8 +1362,7 @@ export class ViewFactory
     }
     if (currentHasRelativeFontWeight && !fontWeightFromOwnStyle) {
       const inheritedFontWeight = props["font-weight"] as
-        | CssCascade.CascadeValue
-        | undefined;
+        CssCascade.CascadeValue | undefined;
       // Likewise for a relative font weight (`bolder`/`lighter`) that comes
       // from a declaration outside the element's own cascaded style, e.g.
       // `aside[role="doc-footnote"]:footnote-content { font-weight: lighter }`.
