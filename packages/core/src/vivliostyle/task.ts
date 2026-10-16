@@ -157,6 +157,18 @@ export function start<T>(func: () => Result<T>, opt_name?: string): Task {
 }
 
 /**
+ * Like `start`, but the task begins to run at once, before this function
+ * returns, instead of waiting for its turn in the scheduler. For async code
+ * that calls legacy functions (see task-bridge.ts).
+ */
+export function startNow<T>(func: () => Result<T>, opt_name?: string): Task {
+  const scheduler = privateCurrentTask
+    ? privateCurrentTask.getScheduler()
+    : primaryScheduler || newScheduler();
+  return scheduler.run(func, opt_name, true);
+}
+
+/**
  * Frame state.
  * @enum {number}
  */
@@ -230,6 +242,19 @@ export class Scheduler {
     return now >= this.sliceOverTime;
   }
 
+  /**
+   * Starts a new time slice if the last one is over. Called when a task runs
+   * outside of the scheduler's own loop (see `Task.startNow()` and
+   * `Continuation.resumeNow()`), so that `Frame.timeSlice()` measures the time
+   * from the moment the task started to run.
+   */
+  beginSliceIfOver(): void {
+    const now = this.timer.currentTime();
+    if (now >= this.sliceOverTime) {
+      this.sliceOverTime = now + this.slice;
+    }
+  }
+
   private arm(): void {
     if (this.inTimeSlice) {
       return;
@@ -294,7 +319,11 @@ export class Scheduler {
     }
   }
 
-  run(func: () => Result<any>, opt_name?: string): Task {
+  run(
+    func: () => Result<any>,
+    opt_name?: string,
+    opt_immediate?: boolean,
+  ): Task {
     const task = new Task(this, opt_name || "");
     task.top = new Frame<any>(task, null, "bootstrap");
     task.top.state = FrameState.ACTIVE;
@@ -321,8 +350,13 @@ export class Scheduler {
     });
     const savedTask = privateCurrentTask;
     privateCurrentTask = task;
-    this.schedule(task.top.suspend("bootstrap"));
+    const bootstrap = task.top.suspend("bootstrap");
     privateCurrentTask = savedTask;
+    if (opt_immediate) {
+      bootstrap.resumeNow(null);
+    } else {
+      this.schedule(bootstrap);
+    }
     return task;
   }
 }
@@ -362,6 +396,25 @@ export class Continuation<T> implements Base.Comparable {
     const task = this.task;
     if (task) {
       task.scheduler.schedule(this, opt_delay);
+    }
+  }
+
+  /**
+   * Resume the task at once with the given result, instead of scheduling the
+   * continuation. For the code that waits for something outside of the
+   * scheduler, such as a Promise.
+   */
+  resumeNow(result: T): boolean {
+    if (this.canceled) {
+      return false;
+    }
+    this.result = result;
+    this.task?.scheduler.beginSliceIfOver();
+    try {
+      return this.resumeInternal();
+    } catch (err) {
+      Logging.logger.error(err);
+      return false;
     }
   }
 

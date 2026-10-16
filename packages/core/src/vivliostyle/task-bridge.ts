@@ -27,9 +27,11 @@
  * - A legacy `Result` can be consumed only once, and its callback runs
  *   synchronously when the result is already available, while `await` always
  *   yields a microtask. Keep synchronous fast paths (see `fetcherResult`).
- * - Each crossing from legacy code to a Promise (`fromPromise`) or from async
- *   code to a legacy task (`runLegacy`) costs about 1 ms (the scheduler's
- *   minimum timeout), so do not cross the boundary in a hot loop.
+ * - A crossing from legacy code to a Promise (`fromPromise`) or from async
+ *   code to a legacy task (`runLegacy`) does not wait for the scheduler's
+ *   timer: a legacy function that runs from async code starts at once, and a
+ *   legacy task resumes in the microtask that follows the Promise. It still
+ *   costs a Promise and a microtask, so avoid it in the innermost loops.
  *
  * Delete this file when no legacy code is left.
  */
@@ -64,9 +66,11 @@ export function fromPromise<T>(
       }
       callback(value);
     });
+  // Resume the task as soon as the promise settles, not through the
+  // scheduler's timer: the timer would add at least 1 ms to every crossing.
   promise.then(
-    (value) => continuation.schedule(value),
-    (e) => continuation.schedule(new Rejection(toError(e)) as unknown as T),
+    (value) => continuation.resumeNow(value),
+    (e) => continuation.resumeNow(new Rejection(toError(e)) as unknown as T),
   );
   return frame.result();
 }
@@ -105,7 +109,7 @@ export function runLegacy<T>(
   name: string = "runLegacy",
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    Task.start(
+    Task.startNow(
       () =>
         Task.handle<T>(
           name,

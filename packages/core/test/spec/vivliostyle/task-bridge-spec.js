@@ -82,6 +82,60 @@ describe("task-bridge", function () {
     });
   });
 
+  describe("crossing the boundary does not wait for the scheduler", function () {
+    it("runLegacy starts the legacy function before it returns", async function () {
+      var started = false;
+      var promise = adapt_bridge.runLegacy(function () {
+        started = true;
+        return adapt_task.newResult(7);
+      });
+      expect(started).toBe(true);
+      expect(await promise).toBe(7);
+    });
+
+    it("fromPromise resumes the legacy task before the next timer", async function () {
+      var order = [];
+      setTimeout(function () {
+        order.push("timer");
+      }, 0);
+      await new Promise(function (resolve) {
+        adapt_task.startNow(function () {
+          var frame = adapt_task.newFrame("caller");
+          adapt_bridge.fromPromise(Promise.resolve(1)).then(function () {
+            order.push("resumed");
+            resolve();
+            frame.finish(true);
+          });
+          return frame.result();
+        });
+      });
+      expect(order).toEqual(["resumed"]);
+    });
+
+    it("keeps the time slice measured from the moment the task resumes", async function () {
+      // A legacy task that asks for a time slice right after being resumed
+      // must not be asked to yield because of a stale slice.
+      var scheduler = adapt_task.newScheduler();
+      scheduler.setSlice(1000);
+      var yielded = await new Promise(function (resolve) {
+        scheduler.run(
+          function () {
+            var frame = adapt_task.newFrame("caller");
+            adapt_bridge.fromPromise(adapt_taskutil.sleep(5)).then(function () {
+              var slice = frame.timeSlice();
+              resolve(slice.isPending());
+              frame.finish(true);
+            });
+            return frame.result();
+          },
+          "slice",
+          true,
+        );
+      });
+      expect(yielded).toBe(false);
+    });
+  });
+
   describe("fetcherResult / waitForFetchersResult", function () {
     it("are synchronous when everything has arrived", async function () {
       var fetcher = new adapt_taskutil.Fetcher(async () => "R");
