@@ -51,7 +51,6 @@ import * as Plugin from "./plugin";
 import * as PageMaster from "./page-master";
 import * as Scripts from "./scripts";
 import * as TaskUtil from "./task-util";
-import { runLegacy } from "./task-bridge";
 import * as TextPolyfill from "./text-polyfill";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
@@ -1740,16 +1739,11 @@ export class StyleInstance
         pageFloatLayoutContext.deferPageFloat(continuation);
         break;
       }
-      const success = await runLegacy(
-        () =>
-          column.layoutPageFloatInner(
-            continuation,
-            strategy,
-            null,
-            pageFloatFragment,
-          ),
-        "layoutPageFloatInner",
-        this.layoutSignal,
+      const success = await column.layoutPageFloatInner(
+        continuation,
+        strategy,
+        null,
+        pageFloatFragment,
       );
       if (!success) {
         break;
@@ -1873,15 +1867,11 @@ export class StyleInstance
           }
         }
         const flowChunk = selected.flowChunk;
-        const newPosition = await runLegacy(
-          () =>
-            column.layout(
-              selected.chunkPosition,
-              leadingEdge,
-              flowPosition.breakAfter,
-            ),
-          "layout",
-          this.layoutSignal,
+        this.layoutSignal?.throwIfAborted();
+        const newPosition = await column.layout(
+          selected.chunkPosition,
+          leadingEdge,
+          flowPosition.breakAfter,
         );
         if (column.pageFloatLayoutContext.isInvalidated()) {
           break;

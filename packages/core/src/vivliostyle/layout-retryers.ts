@@ -17,7 +17,6 @@
  * @fileoverview LayoutRetryers - Definitions of LayoutRetryer.
  */
 import * as Asserts from "./asserts";
-import * as Task from "./task";
 import { Layout, Vtree } from "./types";
 
 /**
@@ -33,21 +32,19 @@ export abstract class AbstractLayoutRetryer {
   layout(
     nodeContext: Vtree.NodeContext,
     column: Layout.Column,
-  ): Task.Result<Vtree.NodeContext | null> {
+  ): Promise<Vtree.NodeContext | null> {
     this.prepareLayout(nodeContext, column);
     return this.tryLayout(nodeContext, column);
   }
 
-  private tryLayout(
+  private async tryLayout(
     nodeContext: Vtree.NodeContext,
     column: Layout.Column,
-  ): Task.Result<Vtree.NodeContext | null> {
-    const frame = Task.newFrame<Vtree.NodeContext | null>(
-      "AbstractLayoutRetryer.tryLayout",
-    );
-    this.saveState(nodeContext, column);
-    const mode = this.resolveLayoutMode(nodeContext);
-    mode.doLayout(nodeContext, column).then((positionAfter) => {
+  ): Promise<Vtree.NodeContext | null> {
+    for (;;) {
+      this.saveState(nodeContext, column);
+      const mode = this.resolveLayoutMode(nodeContext);
+      const positionAfter = await mode.doLayout(nodeContext, column);
       let accepted = mode.accept(positionAfter, column);
       accepted = mode.postLayout(
         positionAfter,
@@ -56,15 +53,13 @@ export abstract class AbstractLayoutRetryer {
         accepted,
       );
       if (accepted) {
-        frame.finish(positionAfter);
-      } else {
-        Asserts.assert(this.initialPosition);
-        this.clearNodes(this.initialPosition);
-        this.restoreState(nodeContext, column);
-        this.tryLayout(this.initialPosition, column).thenFinish(frame);
+        return positionAfter;
       }
-    });
-    return frame.result();
+      Asserts.assert(this.initialPosition);
+      this.clearNodes(this.initialPosition);
+      this.restoreState(nodeContext, column);
+      nodeContext = this.initialPosition;
+    }
   }
 
   /**

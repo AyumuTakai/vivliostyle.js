@@ -18,7 +18,6 @@
  * @fileoverview LayoutUtil - Utilities related to layout.
  */
 import * as Break from "./break";
-import * as Task from "./task";
 import * as VtreeImpl from "./vtree";
 import { Vtree } from "./types";
 
@@ -46,7 +45,8 @@ export function asActiveState(
     : null;
 }
 
-export interface RenderedActiveLayoutIteratorState extends ActiveLayoutIteratorState {
+export interface RenderedActiveLayoutIteratorState
+  extends ActiveLayoutIteratorState {
   get nodeContext(): Vtree.RenderedNodeContext;
   set nodeContext(nodeContext: Vtree.NodeContext | null);
 }
@@ -70,45 +70,45 @@ export class LayoutIteratorStrategy {
 
   startNonDisplayableNode(
     state: ActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   afterNonDisplayableNode(
     state: ActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   startIgnoredTextNode(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   afterIgnoredTextNode(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   startNonElementNode(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   afterNonElementNode(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   startInlineElementNode(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   afterInlineElementNode(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   startNonInlineElementNode(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   afterNonInlineElementNode(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
-  finish(state: LayoutIteratorState): void | Task.Result<boolean> {}
+  finish(state: LayoutIteratorState): void | Promise<boolean> {}
 }
 
 export class LayoutIterator {
@@ -117,52 +117,31 @@ export class LayoutIterator {
     private readonly layoutContext: Vtree.LayoutContext,
   ) {}
 
-  iterate(
+  async iterate(
     initialNodeContext: Vtree.NodeContext,
-  ): Task.Result<Vtree.NodeContext | null> {
+  ): Promise<Vtree.NodeContext | null> {
     const strategy = this.strategy;
     const state = strategy.initialState(initialNodeContext);
-    const frame: Task.Frame<Vtree.NodeContext | null> =
-      Task.newFrame("LayoutIterator");
-    frame
-      .loopWithFrame((loopFrame) => {
-        for (;;) {
-          const active = asActiveState(state);
-          if (!active) {
-            break;
-          }
-          const nextResult = this.step(active);
-          if (nextResult.isPending()) {
-            nextResult.then((nextNodeContext) => {
-              if (state.break) {
-                loopFrame.breakLoop();
-              } else {
-                state.nodeContext = nextNodeContext;
-                loopFrame.continueLoop();
-              }
-            });
-            return;
-          } else if (state.break) {
-            loopFrame.breakLoop();
-            return;
-          } else {
-            state.nodeContext = nextResult.get();
-          }
-        }
-        strategy.finish(state);
-        loopFrame.breakLoop();
-      })
-      .then(() => {
-        frame.finish(state.nodeContext);
-      });
-    return frame.result();
+    for (;;) {
+      const active = asActiveState(state);
+      if (!active) {
+        break;
+      }
+      const nextNodeContext = await this.step(active);
+      if (state.break) {
+        return state.nodeContext;
+      }
+      state.nodeContext = nextNodeContext;
+    }
+    strategy.finish(state);
+    return state.nodeContext;
   }
 
-  private step(
+  private async step(
     state: ActiveLayoutIteratorState,
-  ): Task.Result<Vtree.NodeContext | null> {
+  ): Promise<Vtree.NodeContext | null> {
     const strategy = this.strategy;
-    let r: void | Task.Result<boolean>;
+    let r: void | Promise<boolean>;
     const rendered = asRenderedActiveState(state);
     if (!rendered) {
       if (state.nodeContext.after) {
@@ -204,16 +183,16 @@ export class LayoutIterator {
         }
       }
     }
-    const cont = r && r.isPending() ? r : Task.newResult(true);
-    return cont.thenAsync(() => {
-      if (state.break) {
-        return Task.newResult(null);
-      }
-      return this.layoutContext.nextInTree(
-        state.nodeContext,
-        state.atUnforcedBreak,
-      );
-    });
+    if (r) {
+      await r;
+    }
+    if (state.break) {
+      return null;
+    }
+    return this.layoutContext.nextInTree(
+      state.nodeContext,
+      state.atUnforcedBreak,
+    );
   }
 }
 
@@ -224,15 +203,15 @@ export class EdgeSkipper extends LayoutIteratorStrategy {
 
   startNonInlineBox(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   endEmptyNonInlineBox(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   endNonInlineBox(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {}
+  ): void | Promise<boolean> {}
 
   initialState(initialNodeContext: Vtree.NodeContext): LayoutIteratorState {
     return {
@@ -249,13 +228,13 @@ export class EdgeSkipper extends LayoutIteratorStrategy {
 
   override startNonElementNode(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {
+  ): void | Promise<boolean> {
     state.onStartEdges = false;
   }
 
   override startNonInlineElementNode(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {
+  ): void | Promise<boolean> {
     state.leadingEdgeContexts.push(state.nodeContext.copy());
     state.breakAtTheEdge = Break.resolveEffectiveBreakValue(
       state.breakAtTheEdge,
@@ -267,35 +246,38 @@ export class EdgeSkipper extends LayoutIteratorStrategy {
 
   override afterNonInlineElementNode(
     state: RenderedActiveLayoutIteratorState,
-  ): void | Task.Result<boolean> {
-    let r: void | Task.Result<boolean>;
-    let cont: Task.Result<boolean>;
+  ): void | Promise<boolean> {
+    return this.doAfterNonInlineElementNode(state);
+  }
+
+  private async doAfterNonInlineElementNode(
+    state: RenderedActiveLayoutIteratorState,
+  ): Promise<boolean> {
     if (state.onStartEdges) {
-      r = this.endEmptyNonInlineBox(state);
-      cont = r && r.isPending() ? r : Task.newResult(true);
-      cont = cont.thenAsync(() => {
-        if (!state.break) {
-          state.leadingEdgeContexts = [];
-          state.leadingEdge = false;
-          state.atUnforcedBreak = false;
-          state.breakAtTheEdge = null;
-        }
-        return Task.newResult(true);
-      });
-    } else {
-      r = this.endNonInlineBox(state);
-      cont = r && r.isPending() ? r : Task.newResult(true);
-    }
-    return cont.thenAsync(() => {
-      if (!state.break) {
-        state.onStartEdges = false;
-        state.lastAfterNodeContext = state.nodeContext.copy();
-        state.breakAtTheEdge = Break.resolveEffectiveBreakValue(
-          state.breakAtTheEdge,
-          state.nodeContext.breakAfter,
-        );
+      const r = this.endEmptyNonInlineBox(state);
+      if (r) {
+        await r;
       }
-      return Task.newResult(true);
-    });
+      if (!state.break) {
+        state.leadingEdgeContexts = [];
+        state.leadingEdge = false;
+        state.atUnforcedBreak = false;
+        state.breakAtTheEdge = null;
+      }
+    } else {
+      const r = this.endNonInlineBox(state);
+      if (r) {
+        await r;
+      }
+    }
+    if (!state.break) {
+      state.onStartEdges = false;
+      state.lastAfterNodeContext = state.nodeContext.copy();
+      state.breakAtTheEdge = Break.resolveEffectiveBreakValue(
+        state.breakAtTheEdge,
+        state.nodeContext.breakAfter,
+      );
+    }
+    return true;
   }
 }

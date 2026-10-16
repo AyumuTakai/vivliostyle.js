@@ -20,7 +20,6 @@ import * as BreakPosition from "./break-position";
 import * as LayoutHelper from "./layout-helper";
 import * as Plugin from "./plugin";
 import * as RubyEmphasis from "./ruby-emphasis";
-import * as Task from "./task";
 import { FormattingContextType, Layout, LayoutProcessor, Vtree } from "./types";
 
 /**
@@ -35,7 +34,7 @@ export interface LayoutProcessor {
     nodeContext: Vtree.NodeContext,
     column: Layout.Column,
     leadingEdge: boolean,
-  ): Task.Result<Vtree.NodeContext | null>;
+  ): Promise<Vtree.NodeContext | null>;
 
   /**
    * Potential edge breaking position.
@@ -70,7 +69,7 @@ export interface LayoutProcessor {
     nodeContext: Vtree.NodeContext,
     forceRemoveSelf: boolean,
     endOfColumn: boolean,
-  ): Task.Result<boolean>;
+  ): Promise<boolean>;
 
   clearOverflownViewNodes(
     column: Layout.Column,
@@ -109,7 +108,7 @@ export class BlockLayoutProcessor implements LayoutProcessor {
     nodeContext: Vtree.NodeContext,
     column: Layout.Column,
     leadingEdge: boolean,
-  ): Task.Result<Vtree.NodeContext | null> {
+  ): Promise<Vtree.NodeContext | null> {
     const floatNodeContext = column.asFloatNodeContext(nodeContext);
     if (floatNodeContext) {
       return column.layoutFloatOrFootnote(floatNodeContext);
@@ -181,12 +180,12 @@ export class BlockLayoutProcessor implements LayoutProcessor {
    * @return holing true
    * @override
    */
-  finishBreak(
+  async finishBreak(
     column: Layout.Column,
     nodeContext: Vtree.NodeContext,
     forceRemoveSelf: boolean,
     endOfColumn: boolean,
-  ): Task.Result<boolean> {
+  ): Promise<boolean> {
     const removeSelf =
       forceRemoveSelf ||
       (nodeContext.viewNode != null &&
@@ -197,7 +196,7 @@ export class BlockLayoutProcessor implements LayoutProcessor {
       column.layoutContext.processFragmentedBlockEdge(nodeContext);
     }
     RubyEmphasis.adjustAnnotationsForNodes([nodeContext], column.clientLayout);
-    return Task.newResult(true);
+    return true;
   }
 }
 

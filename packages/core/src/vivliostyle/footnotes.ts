@@ -24,7 +24,6 @@ import * as LayoutHelper from "./layout-helper";
 import * as PageFloats from "./page-floats";
 import * as RangeClientRects from "./range-client-rects";
 import * as SemanticFootnote from "./semantic-footnote";
-import * as Task from "./task";
 import * as Vtree from "./vtree";
 import { Layout, PageFloats as PageFloatsType } from "./types";
 
@@ -326,11 +325,11 @@ export class FootnoteLayoutStrategy
   }
 
   /** @override */
-  createPageFloat(
+  async createPageFloat(
     nodeContext: Vtree.FloatNodeContext,
     pageFloatLayoutContext: PageFloats.AttachedPageFloatLayoutContext,
     column: Layout.Column,
-  ): Task.Result<PageFloats.PageFloat> {
+  ): Promise<PageFloats.PageFloat> {
     let floatReference = PageFloats.FloatReference.REGION;
 
     // If the region context has the same container as the page context,
@@ -383,7 +382,7 @@ export class FootnoteLayoutStrategy
       }
     }
     pageFloatLayoutContext.addPageFloat(float);
-    return Task.newResult(float);
+    return float;
   }
 
   /** @override */
@@ -423,86 +422,82 @@ export class FootnoteLayoutStrategy
   }
 
   /** @override */
-  adjustPageFloatArea(
+  async adjustPageFloatArea(
     floatArea: Layout.PageFloatArea,
     floatContainer: Vtree.Container,
     column: Layout.Column,
-  ): Task.Result<void> {
+  ): Promise<void> {
     floatArea.isFootnote = true;
     floatArea.adjustContentRelativeSize = false;
     const element = floatArea.element;
     Asserts.assert(element);
-    return column.layoutContext
-      .applyFootnoteStyle(
-        floatContainer.vertical,
-        (column.layoutContext as any).nodeContext &&
-          (column.layoutContext as any).nodeContext.direction === "rtl",
-        element,
-      )
-      .thenAsync((vertical) => {
-        floatArea.vertical = vertical;
-        floatArea.convertPercentageSizesToPx(element);
-        column.setComputedInsets(element, floatArea);
-        column.setComputedWidthAndHeight(element, floatArea);
-        // Handle box-sizing: border-box for footnote areas (Issue #1878).
-        // The layout engine always works in content-box mode. When the user
-        // specifies box-sizing: border-box, convert max-height/min-height
-        // to content-box equivalents and reset box-sizing on the element.
-        const computedBoxSizing =
-          column.clientLayout.getElementComputedStyle(element)?.boxSizing;
-        if (computedBoxSizing === "border-box") {
-          const blockInsets = floatArea.vertical
-            ? floatArea.paddingLeft +
-              floatArea.paddingRight +
-              floatArea.borderLeft +
-              floatArea.borderRight
-            : floatArea.paddingTop +
-              floatArea.paddingBottom +
-              floatArea.borderTop +
-              floatArea.borderBottom;
-          // In vertical writing mode, block-direction properties are
-          // width/max-width/min-width instead of height/max-height/min-height.
-          const blockProps = floatArea.vertical
-            ? ["max-width", "min-width", "width"]
-            : ["max-height", "min-height", "height"];
-          const cs = getComputedStyle(element);
-          for (const prop of blockProps) {
-            const val = cs.getPropertyValue(prop);
-            if (val && val !== "none") {
-              const px = parseFloat(val);
-              if (!isNaN(px)) {
-                Base.setCSSProperty(
-                  element,
-                  prop,
-                  `${Math.max(0, px - blockInsets)}px`,
-                );
-              }
-            }
-          }
-          Base.setCSSProperty(element, "box-sizing", "content-box");
-        }
-        // CSS GCPM §2.4.2: "The max-height property on the footnote area
-        // limits the size of this area, unless the page contains only
-        // footnotes." When the page-level context has
-        // ignoreFootnoteAreaMaxHeight set (detected after a prior layout
-        // pass found no body content), remove max-height. (Issue #1878)
-        let pageCtx: PageFloatsType.PageFloatLayoutContext | null =
-          column.pageFloatLayoutContext;
-        while (pageCtx) {
-          if (pageCtx.ignoreFootnoteAreaMaxHeight) {
-            // Clear both logical and physical max-block-size properties
-            Base.setCSSProperty(element, "max-block-size", "");
+    const vertical = await column.layoutContext.applyFootnoteStyle(
+      floatContainer.vertical,
+      (column.layoutContext as any).nodeContext &&
+        (column.layoutContext as any).nodeContext.direction === "rtl",
+      element,
+    );
+    floatArea.vertical = vertical;
+    floatArea.convertPercentageSizesToPx(element);
+    column.setComputedInsets(element, floatArea);
+    column.setComputedWidthAndHeight(element, floatArea);
+    // Handle box-sizing: border-box for footnote areas (Issue #1878).
+    // The layout engine always works in content-box mode. When the user
+    // specifies box-sizing: border-box, convert max-height/min-height
+    // to content-box equivalents and reset box-sizing on the element.
+    const computedBoxSizing =
+      column.clientLayout.getElementComputedStyle(element)?.boxSizing;
+    if (computedBoxSizing === "border-box") {
+      const blockInsets = floatArea.vertical
+        ? floatArea.paddingLeft +
+          floatArea.paddingRight +
+          floatArea.borderLeft +
+          floatArea.borderRight
+        : floatArea.paddingTop +
+          floatArea.paddingBottom +
+          floatArea.borderTop +
+          floatArea.borderBottom;
+      // In vertical writing mode, block-direction properties are
+      // width/max-width/min-width instead of height/max-height/min-height.
+      const blockProps = floatArea.vertical
+        ? ["max-width", "min-width", "width"]
+        : ["max-height", "min-height", "height"];
+      const cs = getComputedStyle(element);
+      for (const prop of blockProps) {
+        const val = cs.getPropertyValue(prop);
+        if (val && val !== "none") {
+          const px = parseFloat(val);
+          if (!isNaN(px)) {
             Base.setCSSProperty(
               element,
-              floatArea.vertical ? "max-width" : "max-height",
-              "",
+              prop,
+              `${Math.max(0, px - blockInsets)}px`,
             );
-            break;
           }
-          pageCtx = pageCtx.parent ?? null;
         }
-        return Task.newResult(undefined);
-      });
+      }
+      Base.setCSSProperty(element, "box-sizing", "content-box");
+    }
+    // CSS GCPM §2.4.2: "The max-height property on the footnote area
+    // limits the size of this area, unless the page contains only
+    // footnotes." When the page-level context has
+    // ignoreFootnoteAreaMaxHeight set (detected after a prior layout
+    // pass found no body content), remove max-height. (Issue #1878)
+    let pageCtx: PageFloatsType.PageFloatLayoutContext | null =
+      column.pageFloatLayoutContext;
+    while (pageCtx) {
+      if (pageCtx.ignoreFootnoteAreaMaxHeight) {
+        // Clear both logical and physical max-block-size properties
+        Base.setCSSProperty(element, "max-block-size", "");
+        Base.setCSSProperty(
+          element,
+          floatArea.vertical ? "max-width" : "max-height",
+          "",
+        );
+        break;
+      }
+      pageCtx = pageCtx.parent ?? null;
+    }
   }
 
   /** @override */

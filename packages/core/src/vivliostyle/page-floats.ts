@@ -25,7 +25,6 @@ import * as LayoutHelper from "./layout-helper";
 import * as Logging from "./logging";
 import * as CssLogicalUtil from "./css-logical-util";
 import * as Sizing from "./sizing";
-import * as Task from "./task";
 import * as VtreeImpl from "./vtree";
 import { Layout as LayoutType, PageFloats, Table, Vtree } from "./types";
 
@@ -1434,12 +1433,14 @@ export class AttachedPageFloatLayoutContext
     // first attempt may produce an empty fragment before footnoteMaxBlockSize
     // has been initialized. Seed the usual size-reduction loop from the space
     // currently available on the page instead of deferring the whole footnote.
-    if (!(
-      "footnotePolicy" in float &&
-      this.footnoteMaxBlockSize == null &&
-      this.state.footnoteAnchorsSeen.has(float.getId()) &&
-      this.hasMultiColumnFootnoteContext()
-    )) {
+    if (
+      !(
+        "footnotePolicy" in float &&
+        this.footnoteMaxBlockSize == null &&
+        this.state.footnoteAnchorsSeen.has(float.getId()) &&
+        this.hasMultiColumnFootnoteContext()
+      )
+    ) {
       return false;
     }
     const availableOuterBlockSize =
@@ -2777,43 +2778,40 @@ export class NormalPageFloatLayoutStrategy implements PageFloatLayoutStrategy {
   }
 
   /** @override */
-  createPageFloat(
+  async createPageFloat(
     nodeContext: Vtree.FloatNodeContext,
     pageFloatLayoutContext: AttachedPageFloatLayoutContext,
     column: LayoutType.Column,
-  ): Task.Result<PageFloat> {
+  ): Promise<PageFloat> {
     let floatReference = nodeContext.floatReference;
     const floatSide = nodeContext.floatSide;
     const nodePosition = nodeContext.toNodePosition();
     const insidePageFloat = !!pageFloatLayoutContext.generatingNodePosition;
-    return column
-      .resolveFloatReferenceFromColumnSpan(
-        floatReference,
-        nodeContext.columnSpan,
-        nodeContext,
-      )
-      .thenAsync((ref) => {
-        floatReference = ref;
-        Asserts.assert(pageFloatLayoutContext.flowName);
-        const float = new PageFloat(
-          nodePosition,
-          floatReference,
-          floatSide,
-          nodeContext.clearSide,
-          pageFloatLayoutContext.flowName,
-          nodeContext.floatMinWrapBlock,
-        );
-        float.insidePageFloatArea = insidePageFloat;
-        if (insidePageFloat) {
-          const parentNodePos = pageFloatLayoutContext.generatingNodePosition;
-          if (parentNodePos) {
-            float.parentPageFloat =
-              pageFloatLayoutContext.findPageFloatByNodePosition(parentNodePos);
-          }
-        }
-        pageFloatLayoutContext.addPageFloat(float);
-        return Task.newResult(float);
-      });
+    const ref = await column.resolveFloatReferenceFromColumnSpan(
+      floatReference,
+      nodeContext.columnSpan,
+      nodeContext,
+    );
+    floatReference = ref;
+    Asserts.assert(pageFloatLayoutContext.flowName);
+    const float = new PageFloat(
+      nodePosition,
+      floatReference,
+      floatSide,
+      nodeContext.clearSide,
+      pageFloatLayoutContext.flowName,
+      nodeContext.floatMinWrapBlock,
+    );
+    float.insidePageFloatArea = insidePageFloat;
+    if (insidePageFloat) {
+      const parentNodePos = pageFloatLayoutContext.generatingNodePosition;
+      if (parentNodePos) {
+        float.parentPageFloat =
+          pageFloatLayoutContext.findPageFloatByNodePosition(parentNodePos);
+      }
+    }
+    pageFloatLayoutContext.addPageFloat(float);
+    return float;
   }
 
   /** @override */
@@ -2848,8 +2846,8 @@ export class NormalPageFloatLayoutStrategy implements PageFloatLayoutStrategy {
     floatArea: LayoutType.PageFloatArea,
     floatContainer: Vtree.Container,
     column: LayoutType.Column,
-  ): Task.Result<void> {
-    return Task.newResult(undefined);
+  ): Promise<void> {
+    return Promise.resolve();
   }
 
   /** @override */

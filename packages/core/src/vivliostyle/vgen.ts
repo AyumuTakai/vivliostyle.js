@@ -43,9 +43,7 @@ import * as PseudoElement from "./pseudo-element";
 import * as RepetitiveElement from "./repetitive-element";
 import * as Scripts from "./scripts";
 import * as SemanticFootnote from "./semantic-footnote";
-import * as Task from "./task";
 import * as TaskUtil from "./task-util";
-import { fromPromise } from "./task-bridge";
 import * as Urls from "./urls";
 import * as Vtree from "./vtree";
 import * as Layout from "./layout";
@@ -3182,17 +3180,6 @@ export class ViewFactory
     nodeContext: Vtree.NodeContext,
     firstTime: boolean,
     atUnforcedBreak?: boolean,
-  ): Task.Result<boolean> {
-    return fromPromise(
-      this.setCurrentAsync(nodeContext, firstTime, atUnforcedBreak),
-      "setCurrent",
-    );
-  }
-
-  private setCurrentAsync(
-    nodeContext: Vtree.NodeContext,
-    firstTime: boolean,
-    atUnforcedBreak?: boolean,
   ): Promise<boolean> {
     this.nodeContext = nodeContext;
     this.sourceNode = nodeContext.sourceNode;
@@ -3445,7 +3432,7 @@ export class ViewFactory
     }
 
     // Now create the view for footnote-call
-    const processChildren = await this.setCurrentAsync(
+    const processChildren = await this.setCurrent(
       footnoteCallContext,
       true,
       false,
@@ -3467,17 +3454,7 @@ export class ViewFactory
   }
 
   /** @override */
-  nextInTree(
-    position: Vtree.NodeContext,
-    atUnforcedBreak?: boolean,
-  ): Task.Result<Vtree.NodeContext | null> {
-    return fromPromise(
-      this.nextInTreeAsync(position, atUnforcedBreak),
-      "nextInTree",
-    );
-  }
-
-  private async nextInTreeAsync(
+  async nextInTree(
     position: Vtree.NodeContext,
     atUnforcedBreak?: boolean,
   ): Promise<Vtree.NodeContext | null> {
@@ -3506,7 +3483,7 @@ export class ViewFactory
     }
     this.syncTextNodePageTypeBoundary(nextPosition);
     let nodeContext = nextPosition;
-    const processChildren = await this.setCurrentAsync(
+    const processChildren = await this.setCurrent(
       nodeContext,
       true,
       atUnforcedBreak,
@@ -4090,14 +4067,7 @@ export class ViewFactory
   }
 
   /** @override */
-  peelOff(
-    nodeContext: Vtree.ChildNodeContext,
-    nodeOffset: number,
-  ): Task.Result<Vtree.NodeContext> {
-    return fromPromise(this.peelOffAsync(nodeContext, nodeOffset), "peelOff");
-  }
-
-  private async peelOffAsync(
+  async peelOff(
     nodeContext: Vtree.ChildNodeContext,
     nodeOffset: number,
   ): Promise<Vtree.NodeContext> {
@@ -4150,7 +4120,7 @@ export class ViewFactory
       shadowSibling = null;
       rebuilt = child;
       i--;
-      await this.setCurrentAsync(child, false);
+      await this.setCurrent(child, false);
     }
     return rebuilt ?? nodeContext.parent;
   }
@@ -4163,18 +4133,7 @@ export class ViewFactory
   }
 
   /** @override */
-  applyFootnoteStyle(
-    vertical: boolean,
-    rtl: boolean,
-    target: Element,
-  ): Task.Result<boolean> {
-    return fromPromise(
-      this.applyFootnoteStyleAsync(vertical, rtl, target),
-      "applyFootnoteStyle",
-    );
-  }
-
-  private async applyFootnoteStyleAsync(
+  async applyFootnoteStyle(
     vertical: boolean,
     rtl: boolean,
     target: Element,

@@ -25,10 +25,15 @@ import * as Task from "./task";
 import * as TaskUtil from "./task-util";
 
 export type FormattingContextType =
-  "Block" | "RepetitiveElementsOwner" | "Table";
+  | "Block"
+  | "RepetitiveElementsOwner"
+  | "Table";
 
 export type FragmentLayoutConstraintType =
-  "AfterIfContinue" | "EntireTable" | "RepetitiveElementsOwner" | "TableRow";
+  | "AfterIfContinue"
+  | "EntireTable"
+  | "RepetitiveElementsOwner"
+  | "TableRow";
 
 export namespace CssCascade {
   export type ElementStyle = { [key: string]: any };
@@ -96,7 +101,7 @@ export namespace Layout {
     finishBreak(
       nodeContext: Vtree.NodeContext | null,
       column: Column,
-    ): Task.Result<boolean>;
+    ): Promise<boolean>;
     equalsTo(constraint: FragmentLayoutConstraint): boolean;
     getPriorityOfFinishBreak(): number;
   }
@@ -207,7 +212,7 @@ export namespace Layout {
     stopByOverflow(nodeContext: Vtree.NodeContext): boolean;
     isOverflown(edge: number): boolean;
     getExclusions(): GeometryUtil.Shape[];
-    openAllViews(position: Vtree.NodePosition): Task.Result<Vtree.NodeContext>;
+    openAllViews(position: Vtree.NodePosition): Promise<Vtree.NodeContext>;
     calculateOffsetInNodeForNodeContext(position: Vtree.NodePosition): number;
     /**
      * @param count first-XXX nesting identifier
@@ -215,7 +220,7 @@ export namespace Layout {
     maybePeelOff(
       position: Vtree.NodeContext,
       count: number,
-    ): Task.Result<Vtree.NodeContext>;
+    ): Promise<Vtree.NodeContext>;
     /**
      * Builds the view until a CSS box edge is reached.
      * @param position start source position.
@@ -225,11 +230,11 @@ export namespace Layout {
     buildViewToNextBlockEdge(
       position: Vtree.NodeContext | null,
       checkPoints: Vtree.RenderedNodeContext[],
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
     nextInTree(
       position: Vtree.NodeContext,
       atUnforcedBreak?: boolean,
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
     /**
      * Builds the view for a single unbreakable element.
      * @param position start source position.
@@ -237,7 +242,7 @@ export namespace Layout {
      */
     buildDeepElementView(
       position: Vtree.NodeContext | null,
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
 
     /**
      * Create a single floating element (for exclusion areas).
@@ -306,13 +311,13 @@ export namespace Layout {
      */
     layoutUnbreakable(
       nodeContextIn: Vtree.NodeContext,
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
     /**
      * Layout a single float element.
      */
     layoutFloat(
       nodeContext: Vtree.RenderedNodeContext,
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
 
     setupFloatArea(
       area: PageFloatArea,
@@ -321,14 +326,14 @@ export namespace Layout {
       anchorEdge: number | null,
       strategy: PageFloats.PageFloatLayoutStrategy,
       condition: PageFloats.PageFloatPlacementCondition,
-    ): Task.Result<boolean>;
+    ): Promise<boolean>;
     createPageFloatArea(
       float: PageFloats.PageFloat,
       floatSide: string,
       anchorEdge: number | null,
       strategy: PageFloats.PageFloatLayoutStrategy,
       condition: PageFloats.PageFloatPlacementCondition,
-    ): Task.Result<PageFloatArea | null>;
+    ): Promise<PageFloatArea | null>;
     layoutSinglePageFloatFragment(
       continuations: PageFloats.PageFloatContinuation[],
       floatSide: string,
@@ -337,13 +342,13 @@ export namespace Layout {
       strategy: PageFloats.PageFloatLayoutStrategy,
       anchorEdge: number | null,
       pageFloatFragment?: PageFloats.PageFloatFragment | null,
-    ): Task.Result<SinglePageFloatLayoutResult>;
+    ): Promise<SinglePageFloatLayoutResult>;
     layoutPageFloatInner(
       continuation: PageFloats.PageFloatContinuation,
       strategy: PageFloats.PageFloatLayoutStrategy,
       anchorEdge: number | null,
       pageFloatFragment?: PageFloats.PageFloatFragment | null,
-    ): Task.Result<boolean>;
+    ): Promise<boolean>;
     setFloatAnchorViewNode(
       nodeContext: Vtree.RenderedNodeContext,
     ): Vtree.RenderedNodeContext;
@@ -351,15 +356,15 @@ export namespace Layout {
       floatReference: PageFloats.FloatReference,
       columnSpan: Css.Val | null,
       nodeContext: Vtree.NodeContext,
-    ): Task.Result<PageFloats.FloatReference>;
+    ): Promise<PageFloats.FloatReference>;
     layoutPageFloat(
       nodeContext: Vtree.FloatNodeContext,
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
     processLineStyling(
       nodeContext: Vtree.NodeContext,
       resNodeContext: Vtree.NodeContext | null,
       checkPoints: Vtree.RenderedNodeContext[],
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
     isLoneImage(checkPoints: Vtree.RenderedNodeContext[]): boolean;
     getTrailingMarginEdgeAdjustment(
       trailingEdgeContexts: Vtree.NodeContext[],
@@ -369,7 +374,7 @@ export namespace Layout {
      */
     layoutBreakableBlock(
       nodeContext: Vtree.NodeContext,
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
     postLayoutBlock(
       nodeContext: Vtree.NodeContext | null,
       checkPoints: Vtree.RenderedNodeContext[],
@@ -423,14 +428,14 @@ export namespace Layout {
       nodeContext: Vtree.NodeContext,
       forceRemoveSelf: boolean,
       endOfColumn: boolean,
-    ): Task.Result<boolean>;
+    ): Promise<boolean>;
     findAcceptableBreakPosition(): BreakPositionAndNodeContext | null;
     doFinishBreak(
       nodeContext: Vtree.NodeContext | null,
       overflownNodeContext: Vtree.NodeContext | null,
       initialNodeContext: Vtree.NodeContext | null,
       initialComputedBlockSize: number,
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
     /**
      * Determines if a page break is acceptable at this position
      */
@@ -464,7 +469,7 @@ export namespace Layout {
       nodeContext: Vtree.NodeContext,
       leadingEdge: boolean,
       forcedBreakValue: string | null,
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
     /**
      * Skips non-renderable positions until it hits the end of the flow or some
      * renderable content. Returns the nodeContext that was passed in if some
@@ -472,10 +477,10 @@ export namespace Layout {
      */
     skipTailEdges(
       nodeContext: Vtree.NodeContext,
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
     layoutFloatOrFootnote(
       nodeContext: Vtree.FloatNodeContext,
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
     /**
      * Layout next portion of the source.
      */
@@ -483,7 +488,7 @@ export namespace Layout {
       nodeContext: Vtree.NodeContext,
       leadingEdge: boolean,
       forcedBreakValue?: string | null,
-    ): Task.Result<Vtree.NodeContext>;
+    ): Promise<Vtree.NodeContext>;
     clearOverflownViewNodes(
       nodeContext: Vtree.NodeContext | null,
       removeSelf: boolean,
@@ -511,12 +516,12 @@ export namespace Layout {
       chunkPosition: Vtree.ChunkPosition,
       leadingEdge: boolean,
       breakAfter?: string | null,
-    ): Task.Result<Vtree.ChunkPosition | null>;
+    ): Promise<Vtree.ChunkPosition | null>;
     isFullWithPageFloats(): boolean;
     getMaxBlockSizeOfPageFloats(): number;
     doFinishBreakOfFragmentLayoutConstraints(
       nodeContext: Vtree.NodeContext,
-    ): Task.Result<boolean>;
+    ): Promise<boolean>;
     /**
      * @param nodeContext starting position.
      * @return holding end position.
@@ -525,7 +530,7 @@ export namespace Layout {
       nodeContext: Vtree.NodeContext | null,
       leadingEdge: boolean,
       breakAfter?: string | null,
-    ): Task.Result<{
+    ): Promise<{
       nodeContext: Vtree.NodeContext | null;
       overflownNodeContext: Vtree.NodeContext | null;
     }>;
@@ -574,7 +579,7 @@ export namespace Layout {
     doLayout(
       nodeContext: Vtree.NodeContext,
       column: Layout.Column,
-    ): Task.Result<Vtree.NodeContext | null>;
+    ): Promise<Vtree.NodeContext | null>;
     accept(
       nodeContext: Vtree.NodeContext | null,
       column: Layout.Column,
@@ -789,7 +794,8 @@ export namespace PageFloats {
   }
 
   /** Where a float goes can only be asked of a context bound to a container. */
-  export interface AttachedPageFloatLayoutContext extends ParentPageFloatLayoutContext {
+  export interface AttachedPageFloatLayoutContext
+    extends ParentPageFloatLayoutContext {
     readonly container: Vtree.Container;
     getPageFloatLayoutContext(
       floatReference: FloatReference,
@@ -845,7 +851,7 @@ export namespace PageFloats {
       nodeContext: Vtree.FloatNodeContext,
       pageFloatLayoutContext: AttachedPageFloatLayoutContext,
       column: Layout.Column,
-    ): Task.Result<PageFloat>;
+    ): Promise<PageFloat>;
     createPageFloatFragment(
       continuations: PageFloatContinuation[],
       floatSide: string,
@@ -861,7 +867,7 @@ export namespace PageFloats {
       floatArea: Layout.PageFloatArea,
       floatContainer: Vtree.Container,
       column: Layout.Column,
-    ): Task.Result<void>;
+    ): Promise<void>;
     forbid(
       float: PageFloat,
       pageFloatLayoutContext: AttachedPageFloatLayoutContext,
@@ -877,7 +883,7 @@ export namespace Selectors {
     createElement(
       column: Layout.Column,
       parentNodeContext: Vtree.ElementNodeContext,
-    ): Task.Result<Element>;
+    ): Promise<Element>;
   }
 
   export interface AfterIfContinuesLayoutConstraint
@@ -963,18 +969,18 @@ export namespace RepetitiveElement {
       rootNodeContext: Vtree.ElementNodeContext,
       firstChild: Node | null,
       column: Layout.Column,
-    ): Task.Result<boolean>;
+    ): Promise<boolean>;
     appendFooterToFragment(
       rootNodeContext: Vtree.ElementNodeContext,
       firstChild: Node | null,
       column: Layout.Column,
-    ): Task.Result<boolean>;
+    ): Promise<boolean>;
     appendElementToFragment(
       nodePosition: Vtree.NodePosition,
       rootNodeContext: Vtree.ElementNodeContext,
       firstChild: Node | null,
       column: Layout.Column,
-    ): Task.Result<boolean>;
+    ): Promise<boolean>;
     moveChildren(from: Element, to: Element, firstChild: Node | null): void;
     isAfterLastContent(nodeContext: Vtree.NodeContext): boolean;
     isFirstContentNode(nodeContext: Vtree.NodeContext): boolean;
@@ -1105,7 +1111,7 @@ export namespace Vtree {
       nodeContext: NodeContext,
       firstTime: boolean,
       atUnforcedBreak?: boolean,
-    ): Task.Result<boolean>;
+    ): Promise<boolean>;
     /**
      * Set the container element that holds view elements produced from the
      * source.
@@ -1119,7 +1125,7 @@ export namespace Vtree {
     nextInTree(
       nodeContext: NodeContext,
       atUnforcedBreak?: boolean,
-    ): Task.Result<NodeContext | null>;
+    ): Promise<NodeContext | null>;
     /**
      * Apply pseudo-element styles (if any).
      * @param target element to apply styles to
@@ -1138,7 +1144,7 @@ export namespace Vtree {
       vertical: boolean,
       rtl: boolean,
       target: Element,
-    ): Task.Result<boolean>;
+    ): Promise<boolean>;
     /**
      * Peel off innermost first-XXX pseudoelement, create and create view nodes
      * after the end of that pseudoelement.
@@ -1146,7 +1152,7 @@ export namespace Vtree {
     peelOff(
       nodeContext: ChildNodeContext,
       nodeOffset: number,
-    ): Task.Result<NodeContext>;
+    ): Promise<NodeContext>;
     /**
      * Process a block-end edge of a fragmented block.
      */

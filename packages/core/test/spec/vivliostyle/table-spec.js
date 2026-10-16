@@ -125,18 +125,18 @@ describe("table", function () {
       strategy.currentRowIndex = 0;
     });
 
-    function finishRow() {
+    async function finishRow() {
       var state = {
         nodeContext: rowContext,
         onStartEdges: false,
         break: false,
       };
-      strategy.afterNonInlineElementNode(state).get();
+      await strategy.afterNonInlineElementNode(state);
       return state;
     }
 
-    it("stops a geometrically fitting row when a cell checkpoint violates a constraint", function () {
-      var state = finishRow();
+    it("stops a geometrically fitting row when a cell checkpoint violates a constraint", async function () {
+      var state = await finishRow();
 
       expect(column.checkOverflowAndSaveEdge).toHaveBeenCalledWith(
         rowContext,
@@ -147,11 +147,11 @@ describe("table", function () {
       expect(column.stopAtOverflow).toBe(true);
     });
 
-    it("keeps rendering a spanning row when checkpoint overflow is only geometric", function () {
+    it("keeps rendering a spanning row when checkpoint overflow is only geometric", async function () {
       cell.rowSpan = 2;
       column.layoutConstraint.allowLayout.and.returnValue(true);
 
-      var state = finishRow();
+      var state = await finishRow();
 
       expect(rowContext.overflow).toBe(false);
       expect(state.break).toBe(false);
