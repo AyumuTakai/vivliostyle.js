@@ -425,6 +425,12 @@ export function validateCheckPoints(
   }
 }
 
+/** See Column#hasBlockEndInset. */
+const blockEndInsetCache = new WeakMap<
+  Element,
+  { boxBreakFlags: string | null; vertical: boolean; hasInset: boolean }
+>();
+
 export class Column extends VtreeImpl.Container implements Layout.Column {
   last: Node | null;
   viewDocument: Document;
@@ -3395,6 +3401,32 @@ export class Column extends VtreeImpl.Container implements Layout.Column {
   }
 
   /**
+   * Whether the element has block-end padding or border. Reading the computed
+   * style makes the browser recalculate styles, and this is asked for every
+   * open ancestor of every block, so the answer is kept for as long as the
+   * box break flags of the element (which can remove the inset) and the
+   * writing mode are the same.
+   */
+  private hasBlockEndInset(element: Element, boxBreakFlags: string | null) {
+    const cached = blockEndInsetCache.get(element);
+    if (
+      cached &&
+      cached.boxBreakFlags === boxBreakFlags &&
+      cached.vertical === this.vertical
+    ) {
+      return cached.hasInset;
+    }
+    const style = this.clientLayout.getElementComputedStyle(element);
+    const hasInset = !style || this.hasNonZeroBlockEndInset(style);
+    blockEndInsetCache.set(element, {
+      boxBreakFlags,
+      vertical: this.vertical,
+      hasInset,
+    });
+    return hasInset;
+  }
+
+  /**
    * Temporarily suppress block-end padding/border on ancestor containers
    * that are still being laid out (not yet complete) when using browser
    * column breaking for overflow detection. This prevents the browser's
@@ -3422,11 +3454,10 @@ export class Column extends VtreeImpl.Container implements Layout.Column {
       if (Break.isCloneBoxDecorationBreak(element)) {
         continue;
       }
-      const style = this.clientLayout.getElementComputedStyle(element);
-      if (style && !this.hasNonZeroBlockEndInset(style)) {
+      const original = element.getAttribute("data-viv-box-break");
+      if (!this.hasBlockEndInset(element, original)) {
         continue;
       }
-      const original = element.getAttribute("data-viv-box-break");
       Break.setBoxBreakFlag(element, "block-end");
       saved.push({ element, original });
     }
