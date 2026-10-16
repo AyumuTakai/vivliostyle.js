@@ -42,6 +42,66 @@ describe("task-bridge", function () {
     });
   });
 
+  describe("runLegacy with an AbortSignal", function () {
+    // A legacy function that waits, then records that it went on.
+    function slowLegacy(record) {
+      var frame = adapt_task.newFrame("slow");
+      frame.sleep(40).then(function () {
+        record.finished = true;
+        frame.finish("done");
+      });
+      return frame.result();
+    }
+
+    it("interrupts the legacy task and rejects with the reason", async function () {
+      var record = {};
+      var controller = new AbortController();
+      var promise = adapt_bridge.runLegacy(
+        function () {
+          return slowLegacy(record);
+        },
+        "slow",
+        controller.signal,
+      );
+      await adapt_taskutil.sleep(5);
+      controller.abort(new Error("canceled for the test"));
+      await expectAsync(promise).toBeRejectedWithError("canceled for the test");
+      await adapt_taskutil.sleep(80);
+      expect(record.finished).toBeUndefined();
+    });
+
+    it("does not start the legacy function when the signal is already aborted", async function () {
+      var started = false;
+      var controller = new AbortController();
+      controller.abort(new Error("already aborted"));
+      await expectAsync(
+        adapt_bridge.runLegacy(
+          function () {
+            started = true;
+            return adapt_task.newResult(1);
+          },
+          "never",
+          controller.signal,
+        ),
+      ).toBeRejectedWithError("already aborted");
+      expect(started).toBe(false);
+    });
+
+    it("ignores an abort after the legacy function has finished", async function () {
+      var controller = new AbortController();
+      var result = await adapt_bridge.runLegacy(
+        function () {
+          return adapt_task.newResult(5);
+        },
+        "quick",
+        controller.signal,
+      );
+      controller.abort(new Error("late"));
+      await adapt_taskutil.sleep(5);
+      expect(result).toBe(5);
+    });
+  });
+
   describe("fromPromise", function () {
     it("lets legacy code wait for a Promise", async function () {
       var result = await new Promise(function (resolve) {

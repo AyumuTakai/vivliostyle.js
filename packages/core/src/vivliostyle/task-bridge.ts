@@ -102,30 +102,60 @@ export function toPromise<T>(
 
 /**
  * For async code: call a legacy function. The function runs as a task of its
- * own, because legacy code needs the ambient task context.
+ * own, because legacy code needs the ambient task context; it starts at once.
+ *
+ * If `signal` is aborted while the legacy function is still running, the task
+ * is interrupted (at the point where it is waiting) and the returned Promise
+ * is rejected with the reason of the signal.
  */
 export function runLegacy<T>(
   func: () => Task.Result<T>,
   name: string = "runLegacy",
+  signal?: AbortSignal,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    Task.startNow(
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    let onAbort: (() => void) | null = null;
+    const cleanup = () => {
+      if (onAbort) {
+        signal.removeEventListener("abort", onAbort);
+        onAbort = null;
+      }
+    };
+    const task = Task.startNow(
       () =>
         Task.handle<T>(
           name,
           (frame) => {
             func().then((value) => {
+              cleanup();
               resolve(value);
               frame.finish(value);
             });
           },
           (frame, err) => {
+            cleanup();
             reject(err);
-            frame.finish(null as T);
+            // After an interrupt this runs outside of the task: the interrupt
+            // itself then finishes the frame.
+            if (Task.currentTask() === frame.getTask()) {
+              frame.finish(null as T);
+            }
           },
         ),
       name,
     );
+    if (signal && task.isRunning()) {
+      onAbort = () => {
+        if (task.isRunning()) {
+          task.interrupt(toError(signal.reason));
+        }
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
   });
 }
 

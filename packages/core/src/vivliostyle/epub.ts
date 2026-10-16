@@ -106,10 +106,10 @@ export class EPUBDocStore extends OPS.OPSDocStore {
   static create(
     authorStyleSheets: OPS.StyleSheetParam[] | null,
     userStyleSheets: OPS.StyleSheetParam[] | null,
-  ): Task.Result<EPUBDocStore> {
+  ): EPUBDocStore {
     const store = new EPUBDocStore(authorStyleSheets, userStyleSheets);
     store.triggerSingleDocumentPreprocessing = true;
-    return Task.newResult(store);
+    return store;
   }
 
   makeDeobfuscatorFactory(): Font.DeobfuscatorFactory | null {
