@@ -23,9 +23,25 @@ import * as Logging from "./logging";
 /**
  * Wait for the given time.
  * @param delay in milliseconds.
+ * @param signal if aborted while waiting, the Promise is rejected with the
+ *     reason of the signal.
  */
-export const sleep = (delay: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, delay));
+export const sleep = (delay: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delay);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 
 /**
  * Length of a time slice in milliseconds. Code that runs for a long time

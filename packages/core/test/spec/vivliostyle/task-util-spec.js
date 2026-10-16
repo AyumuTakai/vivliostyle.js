@@ -2,6 +2,29 @@ import * as adapt_logging from "../../../src/vivliostyle/logging";
 import * as adapt_taskutil from "../../../src/vivliostyle/task-util";
 
 describe("task-util", function () {
+  describe("sleep", function () {
+    it("is rejected with the reason of the signal when aborted while waiting", async function () {
+      var abort = new AbortController();
+      var pending = adapt_taskutil.sleep(1000, abort.signal);
+      var reason = new Error("canceled");
+      abort.abort(reason);
+      await expectAsync(pending).toBeRejectedWith(reason);
+    });
+
+    it("is rejected at once for a signal that is already aborted", async function () {
+      var reason = new Error("canceled");
+      await expectAsync(
+        adapt_taskutil.sleep(1000, AbortSignal.abort(reason)),
+      ).toBeRejectedWith(reason);
+    });
+
+    it("waits for the time without a signal", async function () {
+      var start = performance.now();
+      await adapt_taskutil.sleep(20);
+      expect(performance.now() - start).toBeGreaterThanOrEqual(15);
+    });
+  });
+
   describe("Fetcher", function () {
     it("starts its fetch function once", async function () {
       var callCount = 0;

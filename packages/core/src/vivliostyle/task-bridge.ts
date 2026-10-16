@@ -51,13 +51,23 @@ function toError(e: unknown): Error {
  * For legacy code: wait for a Promise. Must be called inside a task. A
  * rejection is re-thrown in the task context when the consumer resumes, so
  * `Task.handle` error handlers see it.
+ *
+ * If `controller` is given, it is aborted when the task is interrupted while
+ * it waits, so that the async code behind the Promise can stop too.
  */
 export function fromPromise<T>(
   promise: Promise<T>,
   name: string = "fromPromise",
+  controller?: AbortController,
 ): Task.Result<T> {
   const frame = Task.newFrame<T>(name);
   const continuation = frame.suspend(name);
+  if (controller) {
+    frame.handler = (handlerFrame, err) => {
+      controller.abort(err);
+      handlerFrame.task.raise(err, handlerFrame.parent);
+    };
+  }
   const originalThen = frame.then.bind(frame);
   frame.then = (callback: (p1: T) => void) =>
     originalThen((value: T | Rejection) => {
@@ -73,6 +83,18 @@ export function fromPromise<T>(
     (e) => continuation.resumeNow(new Rejection(toError(e)) as unknown as T),
   );
   return frame.result();
+}
+
+/**
+ * For legacy code: call an async function that can be canceled. The signal
+ * passed to `start` is aborted when the calling task is interrupted.
+ */
+export function fromAbortable<T>(
+  start: (signal: AbortSignal) => Promise<T>,
+  name: string = "fromAbortable",
+): Task.Result<T> {
+  const controller = new AbortController();
+  return fromPromise(start(controller.signal), name, controller);
 }
 
 /**
