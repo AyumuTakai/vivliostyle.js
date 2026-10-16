@@ -17,6 +17,7 @@
  */
 
 import * as adapt_epub from "../../../src/vivliostyle/epub";
+import * as adapt_logging from "../../../src/vivliostyle/logging";
 import * as adapt_viewer from "../../../src/vivliostyle/adaptive-viewer";
 import * as adapt_task from "../../../src/vivliostyle/task";
 import * as adapt_vtree from "../../../src/vivliostyle/vtree";
@@ -189,6 +190,170 @@ describe("epub", function () {
             expect(opf.spine[0].src).toBe(url);
           },
         );
+      });
+    });
+
+    describe("epage and fragment resolution", function () {
+      // An OPFDoc of two chapters whose documents come from a fake store.
+      async function createOpfDoc(totalOffsets, load) {
+        var store = {
+          load:
+            load ||
+            async function (url) {
+              var index = url.endsWith("b.html") ? 1 : 0;
+              var doc = new DOMParser().parseFromString(
+                "<html xmlns='http://www.w3.org/1999/xhtml'><head><title>t</title></head><body><p id='p'>xxxxxxxxxx</p></body></html>",
+                "text/html",
+              );
+              var holder = new adapt_xmldoc.XMLDocHolder(null, url, doc);
+              // The fake documents report the given total offsets
+              holder.getTotalOffset = function () {
+                return totalOffsets[index];
+              };
+              return holder;
+            },
+          get: function () {
+            return null;
+          },
+        };
+        var opf = await adapt_epub.OPFDoc.fromChapters(store, "", [
+          { url: "http://example.com/a.html", index: 0 },
+          { url: "http://example.com/b.html", index: 1 },
+        ]);
+        // Estimate the pages from the sizes of the documents (the default is
+        // to count the rendered pages)
+        opf.setEPageCountMode(false);
+        return opf;
+      }
+
+      it("countEPages estimates the pages of each spine item and reports the running count", async function () {
+        var opf = await createOpfDoc([3600, 1800]);
+        var counts = [];
+        var result = await opf.countEPages(function (count) {
+          counts.push(count);
+        });
+        expect(result).toBe(true);
+        expect(counts).toEqual([2, 3]);
+        expect(opf.epageCount).toBe(3);
+        expect(opf.spine[0].epage).toBe(0);
+        expect(opf.spine[0].epageCount).toBe(2);
+        expect(opf.spine[1].epage).toBe(2);
+        expect(opf.spine[1].epageCount).toBe(1);
+      });
+
+      it("countEPages stops when the signal is aborted", async function () {
+        var opf = await createOpfDoc([3600, 1800]);
+        var controller = new AbortController();
+        var counts = [];
+        await expectAsync(
+          opf.countEPages(function (count) {
+            counts.push(count);
+            controller.abort(new Error("canceled for the test"));
+          }, controller.signal),
+        ).toBeRejectedWithError("canceled for the test");
+        // The second spine item was not counted
+        expect(counts).toEqual([2]);
+      });
+
+      it("getEPageFromPosition returns the epage proportional to the offset", async function () {
+        var opf = await createOpfDoc([3600, 1800]);
+        await opf.countEPages(null);
+        expect(
+          await opf.getEPageFromPosition({
+            spineIndex: 0,
+            offsetInItem: 0,
+            pageIndex: -1,
+          }),
+        ).toBe(0);
+        expect(
+          await opf.getEPageFromPosition({
+            spineIndex: 0,
+            offsetInItem: 1800,
+            pageIndex: -1,
+          }),
+        ).toBe(1);
+        expect(
+          await opf.getEPageFromPosition({
+            spineIndex: 1,
+            offsetInItem: 900,
+            pageIndex: -1,
+          }),
+        ).toBe(2.5);
+      });
+
+      it("getEPageFromPosition counts rendered pages in the rendered-page mode", async function () {
+        var opf = await createOpfDoc([3600, 1800]);
+        opf.setEPageCountMode(true);
+        opf.spine[1].epage = 5;
+        expect(
+          await opf.getEPageFromPosition({
+            spineIndex: 1,
+            offsetInItem: -1,
+            pageIndex: 3,
+          }),
+        ).toBe(8);
+      });
+
+      it("resolveEPage finds the spine item and the offset of an epage", async function () {
+        var opf = await createOpfDoc([3600, 1800]);
+        await opf.countEPages(null);
+        expect(await opf.resolveEPage(0)).toEqual({
+          spineIndex: 0,
+          offsetInItem: 0,
+          pageIndex: -1,
+        });
+        expect(await opf.resolveEPage(1)).toEqual({
+          spineIndex: 0,
+          offsetInItem: 1800,
+          pageIndex: -1,
+        });
+        expect(await opf.resolveEPage(2.5)).toEqual({
+          spineIndex: 1,
+          offsetInItem: 900,
+          pageIndex: -1,
+        });
+      });
+
+      it("resolveEPage finds the page index in the rendered-page mode", async function () {
+        var opf = await createOpfDoc([3600, 1800]);
+        opf.setEPageCountMode(true);
+        opf.spine[0].epage = 0;
+        opf.spine[0].epageCount = 4;
+        opf.spine[1].epage = 4;
+        opf.spine[1].epageCount = 3;
+        expect(await opf.resolveEPage(5)).toEqual({
+          spineIndex: 1,
+          offsetInItem: -1,
+          pageIndex: 1,
+        });
+      });
+
+      it("resolveEPage gives null and logs when the document cannot be loaded", async function () {
+        spyOn(adapt_logging.logger, "warn");
+        var opf = await createOpfDoc([3600, 1800], async function () {
+          throw new Error("cannot load");
+        });
+        opf.spine[0].epage = 0;
+        opf.spine[0].epageCount = 2;
+        opf.spine[1].epage = 2;
+        opf.spine[1].epageCount = 1;
+        expect(await opf.resolveEPage(1)).toBeNull();
+        expect(adapt_logging.logger.warn).toHaveBeenCalled();
+      });
+
+      it("resolveFragment gives null for an empty or invalid fragment", async function () {
+        spyOn(adapt_logging.logger, "warn");
+        var opf = await createOpfDoc([3600, 1800]);
+        expect(await opf.resolveFragment(null)).toBeNull();
+        expect(await opf.resolveFragment("")).toBeNull();
+        expect(await opf.resolveFragment("not a cfi")).toBeNull();
+      });
+
+      it("getCFI gives a path to the node at an offset", async function () {
+        var opf = await createOpfDoc([3600, 1800]);
+        var cfi = await opf.getCFI(0, 0);
+        expect(typeof cfi).toBe("string");
+        expect(cfi.length).toBeGreaterThan(0);
       });
     });
 
@@ -939,7 +1104,7 @@ describe("epub", function () {
           item.pages[pageIndex] = renderedPage;
         };
         view.collectTotalOffsets = function () {
-          return adapt_task.newResult(true);
+          return Promise.resolve(true);
         };
         view.reportPaginationProgress = function () {};
         view.maybeRelayoutFollowingPage = function () {
@@ -1830,13 +1995,13 @@ describe("epub", function () {
           return { src: "doc-" + i, spineIndex: i };
         }),
         store: {
-          loadResult: function (src) {
+          load: async function (src) {
             var index = Number(src.replace("doc-", ""));
-            return adapt_task.newResult({
+            return {
               getTotalOffset: function () {
                 return totalOffsets[index];
               },
-            });
+            };
           },
         },
       };
@@ -1898,24 +2063,19 @@ describe("epub", function () {
       expect(payloads[1].fraction).toBe(1);
     });
 
-    it("does not report 100% until the last of multiple documents is paginated", function (done) {
+    it("does not report 100% until the last of multiple documents is paginated", async function () {
       var view = createFakeView([100, 100, 100]);
 
-      adapt_task.start(function () {
-        view.collectTotalOffsets().then(function () {
-          // Each spine item is loaded and fully paginated in order
-          for (var i = 0; i < 3; i++) {
-            var viewItem = createFakeViewItem(view, i, 100);
-            view.spineItems[i] = viewItem;
-            view.reportPaginationProgress(viewItem, null);
-          }
-          expect(payloads[0].fraction).toBeCloseTo(1 / 3, 5);
-          expect(payloads[1].fraction).toBeCloseTo(2 / 3, 5);
-          expect(payloads[2].fraction).toBe(1);
-          done();
-        });
-        return adapt_task.newResult(true);
-      });
+      await view.collectTotalOffsets();
+      // Each spine item is loaded and fully paginated in order
+      for (var i = 0; i < 3; i++) {
+        var viewItem = createFakeViewItem(view, i, 100);
+        view.spineItems[i] = viewItem;
+        view.reportPaginationProgress(viewItem, null);
+      }
+      expect(payloads[0].fraction).toBeCloseTo(1 / 3, 5);
+      expect(payloads[1].fraction).toBeCloseTo(2 / 3, 5);
+      expect(payloads[2].fraction).toBe(1);
     });
 
     it("reports the initial render fraction against the whole publication, not just the first document", function (done) {

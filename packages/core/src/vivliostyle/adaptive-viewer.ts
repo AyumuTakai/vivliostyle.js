@@ -310,10 +310,7 @@ export class AdaptiveViewer {
   private async render(fragment?: string | null): Promise<boolean> {
     this.cancelRendering();
     if (fragment) {
-      this.pagePosition = await runLegacy(
-        () => this.opf.resolveFragment(fragment),
-        "resolveFragment",
-      );
+      this.pagePosition = await this.opf.resolveFragment(fragment);
     }
     Profile.profiler.registerEndTiming("beforeRender");
     return this.resize();
@@ -599,13 +596,9 @@ export class AdaptiveViewer {
 
   private async reportPosition(): Promise<boolean> {
     Asserts.assert(this.pagePosition);
-    const cfi = await runLegacy(
-      () =>
-        this.opf.getCFI(
-          this.pagePosition.spineIndex,
-          this.pagePosition.offsetInItem,
-        ),
-      "getCFI",
+    const cfi = await this.opf.getCFI(
+      this.pagePosition.spineIndex,
+      this.pagePosition.offsetInItem,
     );
     const page = this.currentPage;
     if (this.waitForLoading && page.fetchers.length > 0) {
@@ -1060,30 +1053,25 @@ export class AdaptiveViewer {
       signal.throwIfAborted();
       this.setReadyState(Constants.ReadyState.INTERACTIVE);
 
-      await runLegacy(
-        () =>
-          this.opf.countEPages((epageCount) => {
-            const notification = {
-              t: "nav",
-              epageCount: epageCount,
-              first: this.currentPage.isFirstPage,
-              last: this.isLastPageForNotification(this.currentPage),
-              metadata: this.opf.metadata,
-              docTitle: this.opf.spine[this.pagePosition.spineIndex].title,
-            };
-            if (
-              this.currentPage.isFirstPage ||
-              (this.pagePosition.pageIndex == 0 &&
-                this.opf.spine[this.pagePosition.spineIndex].epage)
-            ) {
-              notification["epage"] =
-                this.opf.spine[this.pagePosition.spineIndex].epage;
-            }
-            this.callback(notification);
-          }),
-        "countEPages",
-        signal,
-      );
+      await this.opf.countEPages((epageCount) => {
+        const notification = {
+          t: "nav",
+          epageCount: epageCount,
+          first: this.currentPage.isFirstPage,
+          last: this.isLastPageForNotification(this.currentPage),
+          metadata: this.opf.metadata,
+          docTitle: this.opf.spine[this.pagePosition.spineIndex].title,
+        };
+        if (
+          this.currentPage.isFirstPage ||
+          (this.pagePosition.pageIndex == 0 &&
+            this.opf.spine[this.pagePosition.spineIndex].epage)
+        ) {
+          notification["epage"] =
+            this.opf.spine[this.pagePosition.spineIndex].epage;
+        }
+        this.callback(notification);
+      }, signal);
       await this.reportPosition();
       signal.throwIfAborted();
       if (this.renderAllPages) {
@@ -1126,10 +1114,7 @@ export class AdaptiveViewer {
       metadata: this.opf.metadata,
       docTitle: this.opf.spine[page.spineIndex].title,
     };
-    const epage = await runLegacy(
-      () => this.opf.getEPageFromPosition(this.pagePosition),
-      "getEPageFromPosition",
-    );
+    const epage = await this.opf.getEPageFromPosition(this.pagePosition);
     notification["epage"] = epage;
     notification["epageCount"] = this.opf.epageCount;
     if (cfi) {

@@ -1125,54 +1125,51 @@ export class OPFDoc {
     this.epageIsRenderedPage = epageIsRenderedPage || this.prePaginated;
   }
 
-  countEPages(
+  /**
+   * Counts the estimated pages ("epage") of all the spine items, and reports
+   * the count so far to the callback after each item. Stops with the reason
+   * of `signal` if it is aborted.
+   */
+  async countEPages(
     epageCountCallback: ((p1: number) => void) | null,
-  ): Task.Result<boolean> {
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     this.epageCountCallback = epageCountCallback;
 
     if (this.epageIsRenderedPage) {
       if (this.prePaginated && this.epageCount == 0) {
         this.assignAutoPages();
       }
-      return Task.newResult(true);
+      return true;
     }
 
     let epage = 0;
-    let i = 0;
-    const frame: Task.Frame<boolean> = Task.newFrame("countEPages");
-    frame
-      .loopWithFrame((loopFrame) => {
-        if (i === this.spine.length) {
-          loopFrame.breakLoop();
-          return;
-        }
-        const item = this.spine[i++];
-        item.epage = epage;
-        this.store.loadResult(item.src).then((xmldoc) => {
-          if (!xmldoc) {
-            loopFrame.continueLoop();
-            return;
-          }
-          // According to the old comment,
-          // "Estimate that offset=2700 roughly corresponds to 1024 bytes of compressed size."
-          // However, it should depend on the language.
-          // Further adjustment needed.
+    for (let i = 0; i < this.spine.length; i++) {
+      signal?.throwIfAborted();
+      const item = this.spine[i];
+      item.epage = epage;
+      const xmldoc = await this.store.load(item.src);
+      signal?.throwIfAborted();
+      if (!xmldoc) {
+        continue;
+      }
+      // According to the old comment,
+      // "Estimate that offset=2700 roughly corresponds to 1024 bytes of compressed size."
+      // However, it should depend on the language.
+      // Further adjustment needed.
 
-          //let offsetPerEPage = 2700;
-          let offsetPerEPage = 1800;
-          const lang = xmldoc.lang || this.lang;
-          if (lang && lang.match(/^(ja|ko|zh)/)) {
-            offsetPerEPage /= 3;
-          }
-          item.epageCount = Math.ceil(xmldoc.getTotalOffset() / offsetPerEPage);
-          epage += item.epageCount;
-          this.epageCount = epage;
-          this.epageCountCallback?.(this.epageCount);
-          loopFrame.continueLoop();
-        });
-      })
-      .thenFinish(frame);
-    return frame.result();
+      //let offsetPerEPage = 2700;
+      let offsetPerEPage = 1800;
+      const lang = xmldoc.lang || this.lang;
+      if (lang && lang.match(/^(ja|ko|zh)/)) {
+        offsetPerEPage /= 3;
+      }
+      item.epageCount = Math.ceil(xmldoc.getTotalOffset() / offsetPerEPage);
+      epage += item.epageCount;
+      this.epageCount = epage;
+      this.epageCountCallback?.(this.epageCount);
+    }
+    return true;
   }
 
   private static buildChapters(
@@ -1382,149 +1379,130 @@ export class OPFDoc {
   /**
    * @return cfi
    */
-  getCFI(spineIndex: number, offsetInItem: number): Task.Result<string | null> {
+  async getCFI(
+    spineIndex: number,
+    offsetInItem: number,
+  ): Promise<string | null> {
     const item = this.spine[spineIndex];
-    const frame: Task.Frame<string | null> = Task.newFrame("getCFI");
-    this.store.loadResult(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
-      const node = xmldoc.getNodeByOffset(offsetInItem);
-      let cfi: string | null = null;
-      if (node) {
-        const startOffset = xmldoc.getNodeOffset(node, 0, false);
-        const offsetInNode = offsetInItem - startOffset;
-        const fragment = new CFI.Fragment();
-        fragment.prependPathFromNode(node, offsetInNode, false, null);
-        if (item.itemRefElement) {
-          fragment.prependPathFromNode(item.itemRefElement, 0, false, null);
-        }
-        cfi = fragment.toString();
+    const xmldoc = await this.store.load(item.src);
+    const node = xmldoc.getNodeByOffset(offsetInItem);
+    let cfi: string | null = null;
+    if (node) {
+      const startOffset = xmldoc.getNodeOffset(node, 0, false);
+      const offsetInNode = offsetInItem - startOffset;
+      const fragment = new CFI.Fragment();
+      fragment.prependPathFromNode(node, offsetInNode, false, null);
+      if (item.itemRefElement) {
+        fragment.prependPathFromNode(item.itemRefElement, 0, false, null);
       }
-      frame.finish(cfi);
-    });
-    return frame.result();
+      cfi = fragment.toString();
+    }
+    return cfi;
   }
 
-  resolveFragment(fragstr: string | null): Task.Result<Position | null> {
-    return Task.handle(
-      "resolveFragment",
-      (frame: Task.Frame<Position | null>): void => {
-        if (!fragstr) {
-          frame.finish(null);
-          return;
+  async resolveFragment(fragstr: string | null): Promise<Position | null> {
+    try {
+      if (!fragstr) {
+        return null;
+      }
+      let fragment = new CFI.Fragment();
+      fragment.fromString(fragstr);
+      let item: OPFItem;
+      if (this.opfXML) {
+        const opfNav = fragment.navigate(this.opfXML.document);
+        if (opfNav.node.nodeType != 1 || opfNav.after || !opfNav.ref) {
+          return null;
         }
-        let fragment = new CFI.Fragment();
-        fragment.fromString(fragstr);
-        let item: OPFItem;
-        if (this.opfXML) {
-          const opfNav = fragment.navigate(this.opfXML.document);
-          if (opfNav.node.nodeType != 1 || opfNav.after || !opfNav.ref) {
-            frame.finish(null);
-            return;
-          }
-          const elem = opfNav.node as Element;
-          const idref = elem.getAttribute("idref");
-          if (elem.localName != "itemref" || !idref || !this.itemMap[idref]) {
-            frame.finish(null);
-            return;
-          }
-          item = this.itemMap[idref];
-          fragment = opfNav.ref;
-        } else {
-          item = this.spine[0];
+        const elem = opfNav.node as Element;
+        const idref = elem.getAttribute("idref");
+        if (elem.localName != "itemref" || !idref || !this.itemMap[idref]) {
+          return null;
         }
-        this.store.loadResult(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
-          const nodeNav = fragment.navigate(xmldoc.document);
-          const offset = xmldoc.getNodeOffset(
-            nodeNav.node,
-            nodeNav.offset,
-            nodeNav.after,
+        item = this.itemMap[idref];
+        fragment = opfNav.ref;
+      } else {
+        item = this.spine[0];
+      }
+      const xmldoc = await this.store.load(item.src);
+      const nodeNav = fragment.navigate(xmldoc.document);
+      const offset = xmldoc.getNodeOffset(
+        nodeNav.node,
+        nodeNav.offset,
+        nodeNav.after,
+      );
+      return {
+        spineIndex: item.spineIndex,
+        offsetInItem: offset,
+        pageIndex: -1,
+      };
+    } catch (err) {
+      Logging.logger.warn(err, "Cannot resolve fragment:", fragstr);
+      return null;
+    }
+  }
+
+  async resolveEPage(epage: number): Promise<Position | null> {
+    try {
+      if (epage <= 0) {
+        return { spineIndex: 0, offsetInItem: 0, pageIndex: -1 };
+      }
+      if (this.epageIsRenderedPage) {
+        let spineIndex = this.spine.findIndex((item) => {
+          return (
+            (item.epage == 0 && item.epageCount == 0) ||
+            (item.epage <= epage && item.epage + item.epageCount > epage)
           );
-          frame.finish({
-            spineIndex: item.spineIndex,
-            offsetInItem: offset,
-            pageIndex: -1,
-          });
         });
-      },
-      (frame: Task.Frame<Position | null>, err: Error): void => {
-        Logging.logger.warn(err, "Cannot resolve fragment:", fragstr);
-        frame.finish(null);
-      },
-    );
+        if (spineIndex == -1) {
+          spineIndex = this.spine.length - 1;
+        }
+        let item = this.spine[spineIndex];
+        if (!item || item.epageCount == 0) {
+          item = this.spine[--spineIndex];
+        }
+        const pageIndex = Math.floor(epage - item.epage);
+        return { spineIndex, offsetInItem: -1, pageIndex: pageIndex };
+      }
+      let spineIndex = Base.binarySearch(this.spine.length, (index) => {
+        const item = this.spine[index];
+        return item.epage + item.epageCount > epage;
+      });
+      if (spineIndex == this.spine.length) {
+        spineIndex--;
+      }
+      const item = this.spine[spineIndex];
+      const xmldoc = await this.store.load(item.src);
+      epage -= item.epage;
+      if (epage > item.epageCount) {
+        epage = item.epageCount;
+      }
+      let offset = 0;
+      if (epage > 0) {
+        const totalOffset = xmldoc.getTotalOffset();
+        offset = Math.round((totalOffset * epage) / item.epageCount);
+        if (offset == totalOffset) {
+          offset--;
+        }
+      }
+      return { spineIndex, offsetInItem: offset, pageIndex: -1 };
+    } catch (err) {
+      Logging.logger.warn(err, "Cannot resolve epage:", epage);
+      return null;
+    }
   }
 
-  resolveEPage(epage: number): Task.Result<Position | null> {
-    return Task.handle(
-      "resolveEPage",
-      (frame: Task.Frame<Position | null>): void => {
-        if (epage <= 0) {
-          frame.finish({ spineIndex: 0, offsetInItem: 0, pageIndex: -1 });
-          return;
-        }
-        if (this.epageIsRenderedPage) {
-          let spineIndex = this.spine.findIndex((item) => {
-            return (
-              (item.epage == 0 && item.epageCount == 0) ||
-              (item.epage <= epage && item.epage + item.epageCount > epage)
-            );
-          });
-          if (spineIndex == -1) {
-            spineIndex = this.spine.length - 1;
-          }
-          let item = this.spine[spineIndex];
-          if (!item || item.epageCount == 0) {
-            item = this.spine[--spineIndex];
-          }
-          const pageIndex = Math.floor(epage - item.epage);
-          frame.finish({ spineIndex, offsetInItem: -1, pageIndex: pageIndex });
-          return;
-        }
-        let spineIndex = Base.binarySearch(this.spine.length, (index) => {
-          const item = this.spine[index];
-          return item.epage + item.epageCount > epage;
-        });
-        if (spineIndex == this.spine.length) {
-          spineIndex--;
-        }
-        const item = this.spine[spineIndex];
-        this.store.loadResult(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
-          epage -= item.epage;
-          if (epage > item.epageCount) {
-            epage = item.epageCount;
-          }
-          let offset = 0;
-          if (epage > 0) {
-            const totalOffset = xmldoc.getTotalOffset();
-            offset = Math.round((totalOffset * epage) / item.epageCount);
-            if (offset == totalOffset) {
-              offset--;
-            }
-          }
-          frame.finish({ spineIndex, offsetInItem: offset, pageIndex: -1 });
-        });
-      },
-      (frame: Task.Frame<Position | null>, err: Error): void => {
-        Logging.logger.warn(err, "Cannot resolve epage:", epage);
-        frame.finish(null);
-      },
-    );
-  }
-
-  getEPageFromPosition(position: Position): Task.Result<number> {
+  async getEPageFromPosition(position: Position): Promise<number> {
     const item = this.spine[position.spineIndex];
     if (this.epageIsRenderedPage) {
-      const epage = item.epage + position.pageIndex;
-      return Task.newResult(epage);
+      return item.epage + position.pageIndex;
     }
     if (position.offsetInItem <= 0) {
-      return Task.newResult(item.epage);
+      return item.epage;
     }
-    const frame: Task.Frame<number> = Task.newFrame("getEPage");
-    this.store.loadResult(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
-      const totalOffset = xmldoc.getTotalOffset();
-      const offset = Math.min(totalOffset, position.offsetInItem);
-      frame.finish(item.epage + (offset * item.epageCount) / totalOffset);
-    });
-    return frame.result();
+    const xmldoc = await this.store.load(item.src);
+    const totalOffset = xmldoc.getTotalOffset();
+    const offset = Math.min(totalOffset, position.offsetInItem);
+    return item.epage + (offset * item.epageCount) / totalOffset;
   }
 }
 
@@ -1811,37 +1789,23 @@ export class OPFView implements Vgen.CustomRendererFactory {
    * their total offsets, so that the pagination progress fraction is
    * computed against the whole publication.
    */
-  private collectTotalOffsets(): Task.Result<boolean> {
+  private async collectTotalOffsets(): Promise<boolean> {
     if (this.paginationProgress.totalOffsetsReady) {
-      return Task.newResult(true);
+      return true;
     }
     const totals = this.paginationProgress.totalOffsetsBySpine;
-    let i = 0;
-    const frame: Task.Frame<boolean> = Task.newFrame("collectTotalOffsets");
-    frame
-      .loopWithFrame((loopFrame) => {
-        if (i === this.opf.spine.length) {
-          loopFrame.breakLoop();
-          return;
-        }
-        const spineIndex = i++;
-        if (totals[spineIndex] != null) {
-          loopFrame.continueLoop();
-          return;
-        }
-        const item = this.opf.spine[spineIndex];
-        this.opf.store.loadResult(item.src).then((xmldoc) => {
-          if (xmldoc) {
-            totals[spineIndex] = xmldoc.getTotalOffset();
-          }
-          loopFrame.continueLoop();
-        });
-      })
-      .then(() => {
-        this.paginationProgress.totalOffsetsReady = true;
-        frame.finish(true);
-      });
-    return frame.result();
+    for (let spineIndex = 0; spineIndex < this.opf.spine.length; spineIndex++) {
+      if (totals[spineIndex] != null) {
+        continue;
+      }
+      const item = this.opf.spine[spineIndex];
+      const xmldoc = await this.opf.store.load(item.src);
+      if (xmldoc) {
+        totals[spineIndex] = xmldoc.getTotalOffset();
+      }
+    }
+    this.paginationProgress.totalOffsetsReady = true;
+    return true;
   }
 
   private getTotalOffsetAll(): number {
@@ -2946,7 +2910,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
       const collectResult = Plugin.getHooksForName(
         Plugin.HOOKS.PAGINATION_PROGRESS,
       ).length
-        ? this.collectTotalOffsets()
+        ? fromPromise(this.collectTotalOffsets(), "collectTotalOffsets")
         : Task.newResult(true);
       collectResult.then(() => {
         this.reportPaginationProgress(viewItem, pos);
@@ -3637,13 +3601,15 @@ export class OPFView implements Vgen.CustomRendererFactory {
   ): Task.Result<PageAndPosition | null> {
     const frame: Task.Frame<PageAndPosition | null> =
       Task.newFrame("navigateToEPage");
-    this.opf.resolveEPage(epage).then((position) => {
-      if (position) {
-        this.findPage(position, sync).thenFinish(frame);
-      } else {
-        frame.finish(null);
-      }
-    });
+    fromPromise(this.opf.resolveEPage(epage), "resolveEPage").then(
+      (position) => {
+        if (position) {
+          this.findPage(position, sync).thenFinish(frame);
+        } else {
+          frame.finish(null);
+        }
+      },
+    );
     return frame.result();
   }
 
@@ -3657,13 +3623,15 @@ export class OPFView implements Vgen.CustomRendererFactory {
   ): Task.Result<PageAndPosition | null> {
     const frame: Task.Frame<PageAndPosition | null> =
       Task.newFrame("navigateToCFI");
-    this.opf.resolveFragment(fragment).then((position) => {
-      if (position) {
-        this.findPage(position, sync).thenFinish(frame);
-      } else {
-        frame.finish(null);
-      }
-    });
+    fromPromise(this.opf.resolveFragment(fragment), "resolveFragment").then(
+      (position) => {
+        if (position) {
+          this.findPage(position, sync).thenFinish(frame);
+        } else {
+          frame.finish(null);
+        }
+      },
+    );
     return frame.result();
   }
 
