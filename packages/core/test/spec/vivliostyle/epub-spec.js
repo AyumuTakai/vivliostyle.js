@@ -610,6 +610,133 @@ describe("epub", function () {
       ]);
     });
   });
+  describe("OPFView page view items", function () {
+    function createView(spineLength) {
+      var view = Object.create(adapt_epub.OPFView.prototype);
+      view.opf = {
+        spine: Array.from({ length: spineLength }, function (_, i) {
+          return { src: "doc-" + i, spineIndex: i };
+        }),
+      };
+      view.spineItems = [];
+      view.spineItemLoading = [];
+      return view;
+    }
+
+    // Loads a fake view item after a delay, as loadPageViewItem does
+    function fakeLoader(view, loaded) {
+      return spyOn(view, "loadPageViewItem").and.callFake(async function (i) {
+        loaded.push(i);
+        await new Promise(function (resolve) {
+          setTimeout(resolve, 5);
+        });
+        var viewItem = { item: view.opf.spine[i], pages: [] };
+        view.spineItems[i] = viewItem;
+        return viewItem;
+      });
+    }
+
+    it("gives null for a spine index that does not exist", async function () {
+      var view = createView(2);
+      var loaded = [];
+      fakeLoader(view, loaded);
+      expect(await view.getPageViewItem(-1)).toBeNull();
+      expect(await view.getPageViewItem(2)).toBeNull();
+      expect(loaded).toEqual([]);
+    });
+
+    it("loads a spine item once for concurrent requests and gives them the same view item", async function () {
+      var view = createView(2);
+      var loaded = [];
+      fakeLoader(view, loaded);
+      var results = await Promise.all([
+        view.getPageViewItem(1),
+        view.getPageViewItem(1),
+        view.getPageViewItem(1),
+      ]);
+      expect(loaded).toEqual([1]);
+      expect(results[0]).not.toBeNull();
+      expect(results[1]).toBe(results[0]);
+      expect(results[2]).toBe(results[0]);
+      expect(view.spineItems[1]).toBe(results[0]);
+    });
+
+    it("does not load a spine item that is already loaded", async function () {
+      var view = createView(2);
+      var loaded = [];
+      fakeLoader(view, loaded);
+      var viewItem = { pages: [] };
+      view.spineItems[0] = viewItem;
+      expect(await view.getPageViewItem(0)).toBe(viewItem);
+      expect(loaded).toEqual([]);
+    });
+
+    it("loads the spine item again after it was discarded", async function () {
+      var view = createView(2);
+      var loaded = [];
+      fakeLoader(view, loaded);
+      var first = await view.getPageViewItem(0);
+      // What the invalidation of the following spine items does
+      view.spineItems[0] = null;
+      view.spineItemLoading[0] = null;
+      var second = await view.getPageViewItem(0);
+      expect(loaded).toEqual([0, 0]);
+      expect(second).not.toBe(first);
+    });
+
+    it("rejects every request that waits for a loading that fails", async function () {
+      var view = createView(2);
+      spyOn(view, "loadPageViewItem").and.callFake(async function () {
+        await new Promise(function (resolve) {
+          setTimeout(resolve, 5);
+        });
+        throw new Error("cannot load the spine item");
+      });
+      var first = view.getPageViewItem(0);
+      var second = view.getPageViewItem(0);
+      await expectAsync(first).toBeRejectedWithError(
+        "cannot load the spine item",
+      );
+      await expectAsync(second).toBeRejectedWithError(
+        "cannot load the spine item",
+      );
+    });
+
+    describe("getPageViewItemResult", function () {
+      it("is available at once for a loaded view item and for a spine index that does not exist", function () {
+        var view = createView(2);
+        var viewItem = { pages: [] };
+        view.spineItems[0] = viewItem;
+        var seen = [];
+        view.getPageViewItemResult(0).then(function (v) {
+          seen.push(v);
+        });
+        view.getPageViewItemResult(5).then(function (v) {
+          seen.push(v);
+        });
+        expect(seen).toEqual([viewItem, null]);
+      });
+
+      it("waits for a spine item that is not loaded yet", async function () {
+        var view = createView(2);
+        var loaded = [];
+        fakeLoader(view, loaded);
+        var viewItem = await new Promise(function (resolve) {
+          adapt_task.startNow(function () {
+            var frame = adapt_task.newFrame("caller");
+            view.getPageViewItemResult(1).then(function (v) {
+              resolve(v);
+              frame.finish(true);
+            });
+            return frame.result();
+          });
+        });
+        expect(loaded).toEqual([1]);
+        expect(viewItem).toBe(view.spineItems[1]);
+      });
+    });
+  });
+
   describe("OPFView page rendering", function () {
     it("stops tracking a render task after a synchronous error", function (done) {
       adapt_task.start(function () {
@@ -650,7 +777,7 @@ describe("epub", function () {
         spyOn(view, "waitForPreviousSpines").and.returnValue(
           adapt_task.newResult(true),
         );
-        spyOn(view, "getPageViewItem").and.returnValue(
+        spyOn(view, "getPageViewItemResult").and.returnValue(
           adapt_task.newResult(viewItem),
         );
         spyOn(view, "renderPage").and.callThrough();
@@ -693,7 +820,7 @@ describe("epub", function () {
         spyOn(view, "waitForPreviousSpines").and.returnValue(
           adapt_task.newResult(true),
         );
-        spyOn(view, "getPageViewItem").and.returnValue(
+        spyOn(view, "getPageViewItemResult").and.returnValue(
           adapt_task.newResult({ pages: [cachedPage], complete: true }),
         );
         spyOn(view, "renderPage").and.returnValue(
@@ -724,7 +851,7 @@ describe("epub", function () {
         spyOn(view, "waitForPreviousSpines").and.returnValue(
           adapt_task.newResult(true),
         );
-        spyOn(view, "getPageViewItem").and.callFake(function () {
+        spyOn(view, "getPageViewItemResult").and.callFake(function () {
           return adapt_task.newResult(viewItem);
         });
         spyOn(view, "renderPage").and.returnValue(
@@ -785,7 +912,7 @@ describe("epub", function () {
         spyOn(view, "waitForPreviousSpines").and.returnValue(
           adapt_task.newResult(true),
         );
-        spyOn(view, "getPageViewItem").and.returnValue(
+        spyOn(view, "getPageViewItemResult").and.returnValue(
           adapt_task.newResult(viewItem),
         );
         spyOn(view, "renderPage");
@@ -841,7 +968,7 @@ describe("epub", function () {
         spyOn(view, "waitForPreviousSpines").and.returnValue(
           adapt_task.newResult(true),
         );
-        spyOn(view, "getPageViewItem").and.returnValue(
+        spyOn(view, "getPageViewItemResult").and.returnValue(
           adapt_task.newResult({ pages: [rebuiltPage], complete: true }),
         );
         var scheduler = adapt_task.currentTask().getScheduler();
@@ -872,11 +999,11 @@ describe("epub", function () {
         spyOn(view, "waitForPreviousSpines").and.returnValue(
           adapt_task.newResult(true),
         );
-        spyOn(view, "getPageViewItem");
+        spyOn(view, "getPageViewItemResult");
 
         view.findPage(position, true).then(function (result) {
           expect(result).toBeNull();
-          expect(view.getPageViewItem).not.toHaveBeenCalled();
+          expect(view.getPageViewItemResult).not.toHaveBeenCalled();
           done();
         });
         return adapt_task.newResult(true);
@@ -933,7 +1060,7 @@ describe("epub", function () {
           epageCountCallback: epageCountCallback,
         };
         view.spineItems = [viewItem];
-        view.spineItemLoadingContinuations = [null];
+        view.spineItemLoading = [null];
         view.deferredPageReplacements = new Map();
         view.pageSheetSizeTruncator = jasmine.createSpy(
           "pageSheetSizeTruncator",
@@ -1140,7 +1267,11 @@ describe("epub", function () {
         pages: [followingPage2],
       };
       view.spineItems = [sourceItem, followingItem1, followingItem2];
-      view.spineItemLoadingContinuations = [[], [], []];
+      view.spineItemLoading = [
+        Promise.resolve(),
+        Promise.resolve(),
+        Promise.resolve(),
+      ];
       view.deferredPageReplacements = new Map();
       var deferredReferencePages = [
         { viewItem: sourceItem },
@@ -1160,8 +1291,8 @@ describe("epub", function () {
       expect(sourcePage.container.remove).not.toHaveBeenCalled();
       expect(followingPage1.container.remove).toHaveBeenCalled();
       expect(followingPage2.container.remove).toHaveBeenCalled();
-      expect(view.spineItemLoadingContinuations[1]).toBeNull();
-      expect(view.spineItemLoadingContinuations[2]).toBeNull();
+      expect(view.spineItemLoading[1]).toBeNull();
+      expect(view.spineItemLoading[2]).toBeNull();
       expect(view.deferredReferencePages).toBe(deferredReferencePages);
       expect(view.deferredReferencePages).toEqual([{ viewItem: sourceItem }]);
       expect(view.counterStore.discardReferencesFromSpine).toHaveBeenCalledWith(
@@ -1197,7 +1328,7 @@ describe("epub", function () {
       view.opf = { epageIsRenderedPage: false };
       view.pageSheetSizeReporter = function () {};
       view.spineItems = [sourceItem, oldViewItem];
-      view.spineItemLoadingContinuations = [[], []];
+      view.spineItemLoading = [Promise.resolve(), Promise.resolve()];
       view.deferredPageReplacements = new Map();
       view.deferredReferencePages = [];
       view.counterStore = {
@@ -1311,7 +1442,7 @@ describe("epub", function () {
     it("keeps the earliest following spine queued for relayout", function () {
       var view = Object.create(adapt_epub.OPFView.prototype);
       view.spineItems = [];
-      view.spineItemLoadingContinuations = [];
+      view.spineItemLoading = [];
 
       view.deferFollowingSpinesForRelayout(3);
       view.deferFollowingSpinesForRelayout(1);
@@ -1965,13 +2096,13 @@ describe("epub", function () {
         view.isInCounterResolveScope = function () {
           return false;
         };
-        spyOn(view, "getPageViewItem");
+        spyOn(view, "getPageViewItemResult");
 
         view
           .resolveUnresolvedReferencesForPage(viewItem, page, 0, { page: 1 })
           .then(function (result) {
             expect(result).toBe(page);
-            expect(view.getPageViewItem).not.toHaveBeenCalled();
+            expect(view.getPageViewItemResult).not.toHaveBeenCalled();
             container.remove();
             done();
           });

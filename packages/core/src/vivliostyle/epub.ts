@@ -1542,7 +1542,12 @@ type DeferredReferencePage = {
 
 export class OPFView implements Vgen.CustomRendererFactory {
   spineItems: (OPFViewItem | null)[] = [];
-  spineItemLoadingContinuations: (Task.Continuation<any>[] | null)[] = [];
+  /**
+   * The loading of the view item of each spine item, shared by everyone who
+   * asks for it while it is in progress. Reset to null together with
+   * `spineItems` to load the spine item again.
+   */
+  spineItemLoading: (Promise<OPFViewItem> | null)[] = [];
   pref: Exprs.Preferences;
   clientLayout: Vgen.DefaultClientLayout;
   counterStore: Counters.CounterStore;
@@ -2151,7 +2156,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
           loopFrame.continueLoop();
           return;
         }
-        this.getPageViewItem(refs.spineIndex).then((targetViewItem) => {
+        this.getPageViewItemResult(refs.spineIndex).then((targetViewItem) => {
           if (!targetViewItem) {
             loopFrame.continueLoop();
             return;
@@ -2751,7 +2756,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
       lastInvalidatedSpine = spineIndex;
       this.retireStalePages(spineIndex, viewItem.pages);
       this.spineItems[spineIndex] = null;
-      this.spineItemLoadingContinuations[spineIndex] = null;
+      this.spineItemLoading[spineIndex] = null;
     }
     return lastInvalidatedSpine;
   }
@@ -3044,7 +3049,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
         this.renderPage(position).then((result) => frame.finish(result));
         return;
       }
-      this.getPageViewItem(position.spineIndex).then((viewItem) => {
+      this.getPageViewItemResult(position.spineIndex).then((viewItem) => {
         if (!viewItem) {
           frame.finish(null);
           return;
@@ -3194,7 +3199,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
   ): Task.Result<PageAndPosition | null> {
     const frame: Task.Frame<PageAndPosition | null> =
       Task.newFrame("renderPageTracked");
-    this.getPageViewItem(position.spineIndex).then((viewItem) => {
+    this.getPageViewItemResult(position.spineIndex).then((viewItem) => {
       if (!viewItem) {
         frame.finish(null);
         return;
@@ -3409,7 +3414,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
     let spineIndex = position.spineIndex;
     let pageIndex = position.pageIndex;
     const frame: Task.Frame<PageAndPosition | null> = Task.newFrame("nextPage");
-    this.getPageViewItem(spineIndex).then((viewItem) => {
+    this.getPageViewItemResult(spineIndex).then((viewItem) => {
       if (!viewItem) {
         frame.finish(null);
         return;
@@ -3432,7 +3437,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
             if (page.container) page.container.remove();
           });
           this.spineItems[spineIndex] = null;
-          this.spineItemLoadingContinuations[spineIndex] = null;
+          this.spineItemLoading[spineIndex] = null;
         }
       } else {
         pageIndex++;
@@ -3719,7 +3724,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
       Task.newFrame("navigateTo");
 
     this.waitForPreviousSpines(item.spineIndex, sync).then(() => {
-      this.getPageViewItem(item.spineIndex).then((viewItem) => {
+      this.getPageViewItemResult(item.spineIndex).then((viewItem) => {
         if (!viewItem) {
           frame.finish(null);
           return;
@@ -3951,182 +3956,176 @@ export class OPFView implements Vgen.CustomRendererFactory {
     };
   }
 
-  getPageViewItem(spineIndex: number): Task.Result<OPFViewItem | null> {
+  /**
+   * For the code that still uses Task/Result: same as `getPageViewItem`, but
+   * the Result is available at once if the view item is already loaded.
+   */
+  getPageViewItemResult(spineIndex: number): Task.Result<OPFViewItem | null> {
     if (spineIndex === -1 || spineIndex >= this.opf.spine.length) {
       return Task.newResult<OPFViewItem | null>(null);
     }
-    let viewItem = this.spineItems[spineIndex];
+    const viewItem = this.spineItems[spineIndex];
     if (viewItem) {
       return Task.newResult(viewItem);
     }
-    const frame: Task.Frame<OPFViewItem> = Task.newFrame("getPageViewItem");
+    return fromPromise(this.getPageViewItem(spineIndex), "getPageViewItem");
+  }
 
-    // If loading for the item has already been started, suspend and wait for
-    // the result.
-    let loadingContinuations = this.spineItemLoadingContinuations[spineIndex];
-    if (loadingContinuations) {
-      const cont = frame.suspend();
-      loadingContinuations.push(cont);
-      return frame.result();
-    } else {
-      loadingContinuations = this.spineItemLoadingContinuations[spineIndex] =
-        [];
+  async getPageViewItem(spineIndex: number): Promise<OPFViewItem | null> {
+    if (spineIndex === -1 || spineIndex >= this.opf.spine.length) {
+      return null;
     }
+    const viewItem = this.spineItems[spineIndex];
+    if (viewItem) {
+      return viewItem;
+    }
+    // If loading for the item has already been started, wait for the result.
+    let loading = this.spineItemLoading[spineIndex];
+    if (!loading) {
+      loading = this.spineItemLoading[spineIndex] =
+        this.loadPageViewItem(spineIndex);
+    }
+    return loading;
+  }
+
+  private async loadPageViewItem(spineIndex: number): Promise<OPFViewItem> {
     const item = this.opf.spine[spineIndex];
     const store = this.opf.store;
-    store.loadResult(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
-      // EPUB Spine properties support
-      const epubSpineProperties =
-        item.itemRefElement.getAttribute("properties");
-      if (epubSpineProperties) {
-        xmldoc.root.setAttribute(
-          "data-vivliostyle-epub-spine-properties",
-          epubSpineProperties,
-        );
-      }
-      item.title = xmldoc.document.title;
-      const style = store.getStyleForDoc(xmldoc);
-      const customRenderer = this.makeCustomRenderer(xmldoc);
-      let viewport = this.viewport;
-      const viewportSize = style.sizeViewport(
-        viewport.width,
-        viewport.height,
-        viewport.fontSize,
-        this.pref,
+    const xmldoc: XmlDoc.XMLDocHolder = await store.load(item.src);
+    // EPUB Spine properties support
+    const epubSpineProperties = item.itemRefElement.getAttribute("properties");
+    if (epubSpineProperties) {
+      xmldoc.root.setAttribute(
+        "data-vivliostyle-epub-spine-properties",
+        epubSpineProperties,
       );
-      if (
-        viewportSize.width != viewport.width ||
-        viewportSize.height != viewport.height ||
-        viewportSize.fontSize != viewport.fontSize
-      ) {
-        viewport = new Vgen.Viewport(
-          viewport.window,
-          viewportSize.fontSize,
-          viewport.pixelRatio,
-          viewport.root,
-          viewportSize.width,
-          viewportSize.height,
-        );
-      }
-      const isVersoFirstPage = this.spineItems[0]?.instance.isVersoFirstPage;
-      const previousViewItem = this.spineItems[spineIndex - 1];
-      let pageNumberOffset: number;
-      let pageCounterOffset: number;
-      if (item.startPage !== null) {
-        pageNumberOffset = item.startPage - 1;
+    }
+    item.title = xmldoc.document.title;
+    const style = store.getStyleForDoc(xmldoc);
+    const customRenderer = this.makeCustomRenderer(xmldoc);
+    let viewport = this.viewport;
+    const viewportSize = style.sizeViewport(
+      viewport.width,
+      viewport.height,
+      viewport.fontSize,
+      this.pref,
+    );
+    if (
+      viewportSize.width != viewport.width ||
+      viewportSize.height != viewport.height ||
+      viewportSize.fontSize != viewport.fontSize
+    ) {
+      viewport = new Vgen.Viewport(
+        viewport.window,
+        viewportSize.fontSize,
+        viewport.pixelRatio,
+        viewport.root,
+        viewportSize.width,
+        viewportSize.height,
+      );
+    }
+    const isVersoFirstPage = this.spineItems[0]?.instance.isVersoFirstPage;
+    const previousViewItem = this.spineItems[spineIndex - 1];
+    let pageNumberOffset: number;
+    let pageCounterOffset: number;
+    if (item.startPage !== null) {
+      pageNumberOffset = item.startPage - 1;
+      pageCounterOffset = pageNumberOffset;
+    } else {
+      if (spineIndex > 0 && (!previousViewItem || !previousViewItem.complete)) {
+        // When navigate to a new spine item skipping the previous items,
+        // give up calculate pageNumberOffset and use epage (or spineIndex if epage is unset).
+        pageNumberOffset = item.epage || spineIndex;
+        if (
+          !this.opf.prePaginated &&
+          pageNumberOffset % 2 == (isVersoFirstPage ? 1 : 0)
+        ) {
+          // Force to odd number to avoid unpaired page. (This is 0 based and even number is recto)
+          // (odd and even are reversed if isVersoFirstPage is true)
+          pageNumberOffset++;
+        }
         pageCounterOffset = pageNumberOffset;
       } else {
-        if (
-          spineIndex > 0 &&
-          (!previousViewItem || !previousViewItem.complete)
-        ) {
-          // When navigate to a new spine item skipping the previous items,
-          // give up calculate pageNumberOffset and use epage (or spineIndex if epage is unset).
-          pageNumberOffset = item.epage || spineIndex;
-          if (
-            !this.opf.prePaginated &&
-            pageNumberOffset % 2 == (isVersoFirstPage ? 1 : 0)
-          ) {
-            // Force to odd number to avoid unpaired page. (This is 0 based and even number is recto)
-            // (odd and even are reversed if isVersoFirstPage is true)
-            pageNumberOffset++;
-          }
-          pageCounterOffset = pageNumberOffset;
+        pageNumberOffset = previousViewItem
+          ? previousViewItem.instance.pageNumberOffset +
+            previousViewItem.pages.length
+          : 0;
+        // Derive the page counter offset from the previous spine's last
+        // rendered page counter start rather than the global
+        // currentPageCounters, which may reflect stale state from a later
+        // spine that has been destroyed and is being recreated (e.g. after
+        // target-text reflow expanded an earlier spine).
+        // Note: pageCounterStarts is captured BEFORE updatePageCounters()
+        // applies counter-increment, so +1 is added for the standard page
+        // auto-increment. Using pageCounterStarts instead of
+        // pageCountersById because the latter can be overwritten during
+        // resolve-scope cascade re-renders (finishPage), making it
+        // unreliable for offset derivation.
+        const prevLastPageCounterStarts =
+          previousViewItem &&
+          previousViewItem.pageCounterStarts[previousViewItem.pages.length - 1];
+        const prevLastPageCounters =
+          prevLastPageCounterStarts && prevLastPageCounterStarts["page"];
+        if (prevLastPageCounters && prevLastPageCounters.length) {
+          // pageCounterStarts stores the counter BEFORE auto-increment,
+          // so add 1 for the page's own increment.
+          pageCounterOffset = prevLastPageCounters.at(-1) + 1;
         } else {
-          pageNumberOffset = previousViewItem
-            ? previousViewItem.instance.pageNumberOffset +
-              previousViewItem.pages.length
-            : 0;
-          // Derive the page counter offset from the previous spine's last
-          // rendered page counter start rather than the global
-          // currentPageCounters, which may reflect stale state from a later
-          // spine that has been destroyed and is being recreated (e.g. after
-          // target-text reflow expanded an earlier spine).
-          // Note: pageCounterStarts is captured BEFORE updatePageCounters()
-          // applies counter-increment, so +1 is added for the standard page
-          // auto-increment. Using pageCounterStarts instead of
-          // pageCountersById because the latter can be overwritten during
-          // resolve-scope cascade re-renders (finishPage), making it
-          // unreliable for offset derivation.
-          const prevLastPageCounterStarts =
-            previousViewItem &&
-            previousViewItem.pageCounterStarts[
-              previousViewItem.pages.length - 1
-            ];
-          const prevLastPageCounters =
-            prevLastPageCounterStarts && prevLastPageCounterStarts["page"];
-          if (prevLastPageCounters && prevLastPageCounters.length) {
-            // pageCounterStarts stores the counter BEFORE auto-increment,
-            // so add 1 for the page's own increment.
-            pageCounterOffset = prevLastPageCounters.at(-1) + 1;
-          } else {
-            const counters = this.counterStore.currentPageCounters["page"];
-            pageCounterOffset =
-              !counters || !counters.length
-                ? pageNumberOffset
-                : counters.at(-1);
-          }
+          const counters = this.counterStore.currentPageCounters["page"];
+          pageCounterOffset =
+            !counters || !counters.length ? pageNumberOffset : counters.at(-1);
+        }
 
-          // Note: The "page" counter value differs to the "page-number" value
-          // if the "page" counter has been reset by counter-reset/increment.
-          // (Fix for issue #701)
-        }
-        if (item.skipPagesBefore !== null) {
-          pageNumberOffset += item.skipPagesBefore;
-          pageCounterOffset += item.skipPagesBefore;
-        }
+        // Note: The "page" counter value differs to the "page-number" value
+        // if the "page" counter has been reset by counter-reset/increment.
+        // (Fix for issue #701)
       }
-      this.counterStore.forceSetPageCounter(pageCounterOffset);
-      // For env(pub-title) and env(doc-title)
-      const pubTitles = this.opf.metadata && this.opf.metadata[metaTerms.title];
-      const pubTitle = (pubTitles && pubTitles[0] && pubTitles[0]["v"]) || "";
-      const docTitle = item.title || "";
+      if (item.skipPagesBefore !== null) {
+        pageNumberOffset += item.skipPagesBefore;
+        pageCounterOffset += item.skipPagesBefore;
+      }
+    }
+    this.counterStore.forceSetPageCounter(pageCounterOffset);
+    // For env(pub-title) and env(doc-title)
+    const pubTitles = this.opf.metadata && this.opf.metadata[metaTerms.title];
+    const pubTitle = (pubTitles && pubTitles[0] && pubTitles[0]["v"]) || "";
+    const docTitle = item.title || "";
 
-      fromPromise(
-        OPS.StyleInstance.create(
-          style,
-          xmldoc,
-          this.opf.lang,
-          viewport,
-          this.clientLayout,
-          this.fontMapper,
-          customRenderer,
-          this.opf.fallbackMap,
-          pageNumberOffset,
-          this.opf.documentURLTransformer,
-          this.counterStore,
-          this.cmykStore,
-          this.pref,
-          pubTitle,
-          docTitle,
-          this.opf.pageProgression,
-          isVersoFirstPage,
-        ),
-        "StyleInstance.create",
-      ).then((instance) => {
-        if (!this.opf.pageProgression && instance.pageProgression) {
-          // Use the first instance's page progression as the global page progression.
-          // (Fix for issue #1260)
-          this.opf.pageProgression = instance.pageProgression;
-        }
-        viewItem = {
-          item,
-          xmldoc,
-          instance,
-          layoutPositions: [null],
-          pages: [],
-          complete: false,
-          pageCounterStarts: [],
-        };
-        this.spineItems[spineIndex] = viewItem;
-
-        frame.finish(viewItem);
-        loadingContinuations.forEach((c) => {
-          c.schedule(viewItem);
-        });
-      });
-    });
-    return frame.result();
+    const instance = await OPS.StyleInstance.create(
+      style,
+      xmldoc,
+      this.opf.lang,
+      viewport,
+      this.clientLayout,
+      this.fontMapper,
+      customRenderer,
+      this.opf.fallbackMap,
+      pageNumberOffset,
+      this.opf.documentURLTransformer,
+      this.counterStore,
+      this.cmykStore,
+      this.pref,
+      pubTitle,
+      docTitle,
+      this.opf.pageProgression,
+      isVersoFirstPage,
+    );
+    if (!this.opf.pageProgression && instance.pageProgression) {
+      // Use the first instance's page progression as the global page progression.
+      // (Fix for issue #1260)
+      this.opf.pageProgression = instance.pageProgression;
+    }
+    const viewItem: OPFViewItem = {
+      item,
+      xmldoc,
+      instance,
+      layoutPositions: [null],
+      pages: [],
+      complete: false,
+      pageCounterStarts: [],
+    };
+    this.spineItems[spineIndex] = viewItem;
+    return viewItem;
   }
 
   removeRenderedPages() {
