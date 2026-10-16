@@ -304,7 +304,11 @@ describe("ruby and emphasis boundary leading", () => {
     const layout = actualLayout();
     spyOn(layout, "getRangeClientRects").and.callThrough();
     spyOn(layout, "getElementClientRect").and.callThrough();
+    spyOn(layout, "getElementComputedStyle").and.callThrough();
     RubyEmphasis.adjustAnnotationsForNodes(nodes(block), layout);
+    // Reading computed styles makes the browser recalculate styles, which is
+    // slow, so ordinary text must not cause it either.
+    expect(layout.getElementComputedStyle).not.toHaveBeenCalled();
     expect(RubyEmphasis.blockEndAllowance(block, layout, false)).toBe(0);
     expect(layout.getRangeClientRects).not.toHaveBeenCalled();
     expect(layout.getElementClientRect).not.toHaveBeenCalled();

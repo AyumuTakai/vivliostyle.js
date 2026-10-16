@@ -1283,7 +1283,35 @@ export class StyleInstance
     }
   }
 
+  /**
+   * Results of getFirstInFlowElementAtOrAfter(), by root and offset. The
+   * search walks the document from the root, and it is asked several times for
+   * each page (and again for every page when a page is laid out again), so the
+   * time to lay out the pages would grow with the square of their number.
+   */
+  private firstInFlowElementCache = new WeakMap<
+    Element,
+    Map<number, Element | null>
+  >();
+
   private getFirstInFlowElementAtOrAfter(
+    root: Element,
+    offset: number,
+  ): Element | null {
+    let cache = this.firstInFlowElementCache.get(root);
+    if (!cache) {
+      cache = new Map();
+      this.firstInFlowElementCache.set(root, cache);
+    }
+    if (cache.has(offset)) {
+      return cache.get(offset)!;
+    }
+    const found = this.findFirstInFlowElementAtOrAfter(root, offset);
+    cache.set(offset, found);
+    return found;
+  }
+
+  private findFirstInFlowElementAtOrAfter(
     root: Element,
     offset: number,
   ): Element | null {

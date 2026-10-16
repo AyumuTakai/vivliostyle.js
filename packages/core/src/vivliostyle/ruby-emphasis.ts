@@ -662,19 +662,21 @@ export function adjustAnnotationsForNodes(
 ): void {
   if (!["chromium", "webkit", "firefox"].includes(Base.browserType)) return;
   const roots = new Set<HTMLElement>();
-  const blocks = new Set<HTMLElement>();
+  const candidateBlocks = new Set<HTMLElement>();
   for (const node of nodes) {
     for (let n: Vtree.NodeContext | null = node; n; n = n.parent) {
       if (!n.inline && n.viewNode?.nodeType === 1) {
         const block = n.viewNode as HTMLElement;
         const root = block.closest<HTMLElement>("[data-vivliostyle-column]");
         if (root) roots.add(root);
-        if (!inNestedColumns(block, (e) => layout.getElementComputedStyle(e)))
-          blocks.add(block);
+        candidateBlocks.add(block);
         break;
       }
     }
   }
+  // Checking for nested columns reads computed styles, which makes the browser
+  // recalculate styles, so it is left until a root with annotations is found.
+  let blocks: Set<HTMLElement> | null = null;
   for (const root of roots) {
     // Leave ordinary layout untouched, including its measurement timing.
     if (
@@ -731,6 +733,12 @@ export function adjustAnnotationsForNodes(
         `${-parseFloat(annotation.getAttribute("data-viv-ruby-start"))}px`,
       );
     }
+    blocks ??= new Set(
+      [...candidateBlocks].filter(
+        (block) =>
+          !inNestedColumns(block, (e) => layout.getElementComputedStyle(e)),
+      ),
+    );
     for (const block of blocks) {
       if (!root.contains(block)) continue;
       prepareEmphasisEnd(block, layout);
