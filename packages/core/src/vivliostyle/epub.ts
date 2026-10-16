@@ -2366,6 +2366,17 @@ export class OPFView implements Vgen.CustomRendererFactory {
       "data-vivliostyle-spine-index",
       currentPage.spineIndex,
     );
+    // The name of the page type (the `page` property), so that tools can tell
+    // for each page which `@page` rules apply to it. Pages of the default type
+    // have no attribute.
+    if (currentPage.pageType) {
+      currentPage.container.setAttribute(
+        "data-vivliostyle-page-type",
+        currentPage.pageType,
+      );
+    } else {
+      currentPage.container.removeAttribute("data-vivliostyle-page-type");
+    }
     return currentPage;
   }
 

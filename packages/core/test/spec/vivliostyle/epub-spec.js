@@ -1766,12 +1766,60 @@ describe("epub", function () {
         });
     });
 
+    describe("page type attribute", function () {
+      function finishPage(pageType) {
+        var view = Object.create(adapt_epub.OPFView.prototype);
+        var parent = document.createElement("div");
+        var container = document.createElement("div");
+        parent.appendChild(container);
+        // A stale value from an earlier layout of the same container.
+        container.setAttribute("data-vivliostyle-page-type", "stale");
+        var page = { container: container, spineIndex: 3, pageType: pageType };
+        var viewItem = { pages: [page], item: { spineIndex: 3 } };
+        view.opf = { spine: [{}, {}, {}, {}] };
+        view.deferredReferencePages = [];
+        view.counterStore = {
+          getUnresolvedRefsToPage: function () {
+            return [];
+          },
+        };
+        view.isInCounterResolveScope = function () {
+          return false;
+        };
+        return view
+          .resolveUnresolvedReferencesForPage(viewItem, page, 0, { page: 1 })
+          .then(function () {
+            return container;
+          });
+      }
+
+      it("tells the name of a named page", async function () {
+        var container = await finishPage("chapter-cover");
+        expect(container.getAttribute("data-vivliostyle-page-type")).toBe(
+          "chapter-cover",
+        );
+        expect(container.getAttribute("data-vivliostyle-spine-index")).toBe(
+          "3",
+        );
+      });
+
+      it("has no attribute for the default page type", async function () {
+        expect(
+          (await finishPage("")).hasAttribute("data-vivliostyle-page-type"),
+        ).toBe(false);
+        expect(
+          (await finishPage(null)).hasAttribute("data-vivliostyle-page-type"),
+        ).toBe(false);
+      });
+    });
+
     it("remembers the cascaded page where a counter scope defers references", function (done) {
       var view = Object.create(adapt_epub.OPFView.prototype);
       var page = {
         container: {
           parentElement: {},
           setAttribute: function () {},
+          removeAttribute: function () {},
         },
         spineIndex: 0,
       };
