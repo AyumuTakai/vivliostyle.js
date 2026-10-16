@@ -17,34 +17,37 @@
 
 import * as adapt_base from "../../../src/vivliostyle/base";
 import * as adapt_net from "../../../src/vivliostyle/net";
-import * as adapt_task from "../../../src/vivliostyle/task";
+import { runLegacy } from "../../../src/vivliostyle/task-bridge";
 import * as adapt_xmldoc from "../../../src/vivliostyle/xml-doc";
 
 describe("net", function () {
   describe("fetchFromURL", function () {
-    it("fetches a data:text/html, URL and parses as an empty HTML document", function (done) {
+    it("fetches a data:text/html, URL and parses as an empty HTML document", async function () {
       var docStore = adapt_xmldoc.newXMLDocStore();
 
-      adapt_task.start(function () {
-        adapt_net
-          .fetchFromURL("data:text/html,", adapt_net.FetchResponseType.DOCUMENT)
-          .then(function (response) {
-            expect(response.status).toBe(200);
-            expect(response.contentType).toContain("text/html");
+      var response = await adapt_net.fetchFromURL(
+        "data:text/html,",
+        adapt_net.FetchResponseType.DOCUMENT,
+      );
+      expect(response.status).toBe(200);
+      expect(response.contentType).toContain("text/html");
 
-            adapt_xmldoc
-              .parseXMLResource(response, docStore)
-              .then(function (docHolder) {
-                expect(docHolder).not.toBeNull();
-                expect(docHolder.document.documentElement.namespaceURI).toBe(
-                  adapt_base.NS.XHTML,
-                );
-                expect(docHolder.document.body).not.toBeNull();
-                done();
-              });
-          });
-        return adapt_task.newResult(true);
+      // parseXMLResource is still a legacy (Task-based) function.
+      var docHolder = await runLegacy(function () {
+        return adapt_xmldoc.parseXMLResource(response, docStore);
       });
+      expect(docHolder).not.toBeNull();
+      expect(docHolder.document.documentElement.namespaceURI).toBe(
+        adapt_base.NS.XHTML,
+      );
+      expect(docHolder.document.body).not.toBeNull();
+    });
+
+    it("resolves with the status instead of rejecting when the fetch fails", async function () {
+      // Nothing listens on port 1: the request fails with a network error.
+      var response = await adapt_net.fetchFromURL("http://127.0.0.1:1/none");
+      expect(response.status).toBe(0);
+      expect(response.responseText).toBeNull();
     });
   });
 });

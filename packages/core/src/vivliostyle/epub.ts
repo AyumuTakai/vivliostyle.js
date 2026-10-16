@@ -36,6 +36,7 @@ import * as OPS from "./ops";
 import * as Plugin from "./plugin";
 import * as SemanticFootnote from "./semantic-footnote";
 import * as Task from "./task";
+import { fromPromise } from "./task-bridge";
 import * as Toc from "./toc";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
@@ -181,7 +182,10 @@ export class EPUBDocStore extends OPS.OPSDocStore {
     } else {
       // For ambiguous URLs (no recognized extension), use HEAD to check
       // content type and availability before loading.
-      Net.fetchFromURL(url, undefined, "HEAD").then((response) => {
+      fromPromise(
+        Net.fetchFromURL(url, undefined, "HEAD"),
+        "fetchFromURL",
+      ).then((response) => {
         if (response.status >= 400) {
           // This url can be the root of an unzipped EPUB.
           this.loadEPUBDoc(url).then((opf) => {
@@ -561,7 +565,7 @@ export function makeDeobfuscator(uid: string): (p1: Blob) => Task.Result<Blob> {
     makeDigest("SHA-1", uid).then((hash) => {
       const head = blob.slice(0, 1040);
       const tail = blob.slice(1040, blob.size);
-      Net.readBlob(head).then((buf) => {
+      fromPromise(Net.readBlob(head), "readBlob").then((buf) => {
         const dataView = new DataView(buf);
         for (let k = 0; k < dataView.byteLength; k++) {
           let b = dataView.getUint8(k);

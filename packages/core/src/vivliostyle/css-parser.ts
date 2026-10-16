@@ -26,6 +26,7 @@ import * as Exprs from "./exprs";
 import * as Logging from "./logging";
 import * as Net from "./net";
 import * as Task from "./task";
+import { fromPromise } from "./task-bridge";
 import { TokenType } from "./css-tokenizer";
 
 /**
@@ -3221,7 +3222,7 @@ export function parseStylesheetFromURL(
   return Task.handle(
     "parseStylesheetFromURL",
     (frame) => {
-      Net.fetchFromURL(url).then((response) => {
+      fromPromise(Net.fetchFromURL(url), "fetchFromURL").then((response) => {
         if (!response.responseText) {
           frame.finish(true);
         } else {

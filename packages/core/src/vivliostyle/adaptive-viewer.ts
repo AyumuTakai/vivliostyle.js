@@ -31,7 +31,7 @@ import * as Plugin from "./plugin";
 import * as Profile from "./profile";
 import * as Scripts from "./scripts";
 import * as Task from "./task";
-import * as TaskUtil from "./task-util";
+import { waitForFetchersResult } from "./task-bridge";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
 import {
@@ -633,7 +633,7 @@ export class AdaptiveViewer {
         const page = this.currentPage;
         const r =
           this.waitForLoading && page.fetchers.length > 0
-            ? TaskUtil.waitForFetchers(page.fetchers)
+            ? waitForFetchersResult(page.fetchers)
             : Task.newResult(true);
         r.then(() => {
           this.sendLocationNotification(page, cfi).thenFinish(frame);

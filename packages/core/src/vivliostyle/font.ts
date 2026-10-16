@@ -25,6 +25,7 @@ import * as Exprs from "./exprs";
 import * as Logging from "./logging";
 import * as Net from "./net";
 import * as Task from "./task";
+import { fromPromise, runLegacy } from "./task-bridge";
 import * as TaskUtil from "./task-util";
 
 function getFontTraitNames(properties: { [key: string]: Css.Val }): string[] {
@@ -122,7 +123,8 @@ export class DocumentFaces {
 
   constructor(
     public readonly deobfuscator:
-      ((p1: string) => ((p1: Blob) => Task.Result<Blob>) | null) | null,
+      | ((p1: string) => ((p1: Blob) => Task.Result<Blob>) | null)
+      | null,
   ) {}
 
   registerFamily(srcFace: Face, viewFace: Face): void {
@@ -200,8 +202,7 @@ export class Mapper {
     srcFace: Face,
     fontBytes: Blob | null,
     documentFaces: DocumentFaces,
-  ): Task.Result<Face> {
-    const frame: Task.Frame<Face> = Task.newFrame("initFont");
+  ): Face {
     const src = srcFace.src as string;
     const props = {} as { [key: string]: Css.Val };
     for (const prop of getFontTraitNames(srcFace.properties)) {
@@ -215,8 +216,7 @@ export class Mapper {
     this.head.appendChild(style);
     viewFontFace.styleElement = style;
     Logging.logger.debug("Load font:", src);
-    frame.finish(viewFontFace);
-    return frame.result();
+    return viewFontFace;
   }
 
   loadFont(
@@ -232,29 +232,28 @@ export class Mapper {
         Logging.logger.debug("Found already-loaded font:", src);
       });
     } else {
-      fetcher = new TaskUtil.Fetcher(() => {
-        const frame: Task.Frame<Face | null> = Task.newFrame("loadFont");
+      fetcher = new TaskUtil.Fetcher<Face | null>(async () => {
         // Get URL from `@font-face` src value.
         const url = src.replace(/^url\("([^"]+)"\).*$/, "$1");
         const deobfuscator = documentFaces.deobfuscator
           ? documentFaces.deobfuscator(url)
           : null;
         if (deobfuscator) {
-          Net.fetchFromURL(url, Net.FetchResponseType.BLOB).then((response) => {
-            if (!response.responseBlob) {
-              frame.finish(null);
-              return;
-            }
-            deobfuscator(response.responseBlob).then((fontBytes) => {
-              this.initFont(srcFace, fontBytes, documentFaces).thenFinish(
-                frame,
-              );
-            });
-          });
-        } else {
-          this.initFont(srcFace, null, documentFaces).thenFinish(frame);
+          const response = await Net.fetchFromURL(
+            url,
+            Net.FetchResponseType.BLOB,
+          );
+          if (!response.responseBlob) {
+            return null;
+          }
+          // The deobfuscator is still a legacy (Task-based) function.
+          const fontBytes = await runLegacy(
+            () => deobfuscator(response.responseBlob),
+            "deobfuscate",
+          );
+          return this.initFont(srcFace, fontBytes, documentFaces);
         }
-        return frame.result();
+        return this.initFont(srcFace, null, documentFaces);
       }, `loadFont ${src}`);
       this.srcURLMap[faceKey] = fetcher;
       fetcher.start();
@@ -274,10 +273,25 @@ export class Mapper {
       }
       fetchers.push(this.loadFont(srcFace, documentFaces));
     }
-    return TaskUtil.waitForFetchers(fetchers).thenAsync(() => {
+    if (fetchers.every((fetcher) => fetcher.hasArrived())) {
+      // Nothing to wait for: keep the synchronous fast path.
       this.reorderFontFaceRules(fetchers);
-      return this.waitFontLoading();
-    });
+      return this.startLoadingFonts()
+        ? fromPromise(this.waitFontLoading(), "waitFontLoading")
+        : Task.newResult(true);
+    }
+    return fromPromise(this.loadFontsAsync(fetchers), "findOrLoadFonts");
+  }
+
+  private async loadFontsAsync(
+    fetchers: TaskUtil.Fetcher<Face | null>[],
+  ): Promise<boolean> {
+    await TaskUtil.waitForFetchers(fetchers);
+    this.reorderFontFaceRules(fetchers);
+    if (this.startLoadingFonts()) {
+      await this.waitFontLoading();
+    }
+    return true;
   }
 
   /**
@@ -298,7 +312,11 @@ export class Mapper {
     }
   }
 
-  waitFontLoading(): Task.Result<boolean> {
+  /**
+   * Starts loading the font faces that are not loaded yet.
+   * @return true if there are font faces being loaded
+   */
+  private startLoadingFonts(): boolean {
     const fonts = this.head.ownerDocument.fonts; // FontFaceSet
     let unloadedCount = 0;
     fonts.forEach((fontFace) => {
@@ -309,20 +327,14 @@ export class Mapper {
         });
       }
     });
-    if (unloadedCount === 0) {
-      return Task.newResult(true);
-    }
-    const frame: Task.Frame<boolean> = Task.newFrame("waitFontLoading");
-    frame
-      .loop(() => {
-        return frame.sleep(20).thenAsync(() => {
-          if (fonts.status === "loading") {
-            return Task.newResult(true); // continue
-          }
-          return Task.newResult(false); // break
-        });
-      })
-      .thenFinish(frame);
-    return frame.result();
+    return unloadedCount > 0;
+  }
+
+  private async waitFontLoading(): Promise<boolean> {
+    const fonts = this.head.ownerDocument.fonts; // FontFaceSet
+    do {
+      await TaskUtil.sleep(20);
+    } while (fonts.status === "loading");
+    return true;
   }
 }

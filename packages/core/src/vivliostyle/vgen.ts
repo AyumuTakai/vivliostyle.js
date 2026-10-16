@@ -45,6 +45,7 @@ import * as Scripts from "./scripts";
 import * as SemanticFootnote from "./semantic-footnote";
 import * as Task from "./task";
 import * as TaskUtil from "./task-util";
+import { waitForFetchersResult } from "./task-bridge";
 import * as Urls from "./urls";
 import * as Vtree from "./vtree";
 import * as Layout from "./layout";
@@ -2705,7 +2706,7 @@ export class ViewFactory
 
         this.viewNode = result;
         if (fetchers.length) {
-          TaskUtil.waitForFetchers(fetchers).then(() => {
+          waitForFetchersResult(fetchers).then(() => {
             if (imageResolution !== undefined && imageResolution > 0) {
               this.modifyElemDimensionWithImageResolution(
                 images,
@@ -2903,7 +2904,7 @@ export class ViewFactory
     isVertical: boolean,
   ) {
     images.forEach((param) => {
-      if (param.fetcher.get().get() === "load") {
+      if (param.fetcher.resource === "load") {
         const img = param.image;
         let scaledWidth = (img as HTMLImageElement).width / imageResolution;
         let scaledHeight = (img as HTMLImageElement).height / imageResolution;
@@ -4334,7 +4335,7 @@ export class ViewFactory
       this.computedStyleParentLineHeightOverride = prevLineHeightOverride;
     }
     if (fetchers.length) {
-      return TaskUtil.waitForFetchers(fetchers).thenReturn(vertical);
+      return waitForFetchersResult(fetchers).thenReturn(vertical);
     }
     return Task.newResult(vertical);
   }

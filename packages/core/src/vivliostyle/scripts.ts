@@ -21,7 +21,7 @@ import * as CssStyler from "./css-styler";
 import * as Net from "./net";
 import * as Task from "./task";
 import * as Logging from "./logging";
-import * as TaskUtil from "./task-util";
+import { waitForFetchersResult } from "./task-bridge";
 
 /**
  * Enable or disable JavaScript in html support
@@ -151,7 +151,7 @@ export function loadScript(
   } else {
     const fetcher = Net.loadElement(scriptElem);
     window.document.head.appendChild(scriptElem);
-    return TaskUtil.waitForFetchers([fetcher]);
+    return waitForFetchersResult([fetcher]);
   }
 }
 

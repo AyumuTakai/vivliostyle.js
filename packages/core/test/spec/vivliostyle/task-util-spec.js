@@ -1,27 +1,99 @@
-import * as adapt_task from "../../../src/vivliostyle/task";
 import * as adapt_taskutil from "../../../src/vivliostyle/task-util";
 
 describe("task-util", function () {
   describe("Fetcher", function () {
-    it("starts its fetch function once", function (done) {
+    it("starts its fetch function once", async function () {
       var callCount = 0;
-
-      adapt_task.start(function () {
-        var fetcher = new adapt_taskutil.Fetcher(function () {
-          callCount++;
-          return adapt_task.newResult("result");
-        });
-
-        fetcher.start();
-        fetcher.get().then(function () {
-          fetcher.start();
-          setTimeout(function () {
-            expect(callCount).toBe(1);
-            done();
-          }, 0);
-        });
-        return adapt_task.newResult(true);
+      var fetcher = new adapt_taskutil.Fetcher(async function () {
+        callCount++;
+        return "result";
       });
+
+      fetcher.start();
+      await fetcher.get();
+      fetcher.start();
+      await adapt_taskutil.sleep(0);
+      expect(callCount).toBe(1);
+    });
+
+    it("gives the same resource to everyone requesting it", async function () {
+      var callCount = 0;
+      var fetcher = new adapt_taskutil.Fetcher(async function () {
+        callCount++;
+        await adapt_taskutil.sleep(5);
+        return { id: 1 };
+      });
+
+      var results = await Promise.all([
+        fetcher.get(),
+        fetcher.get(),
+        fetcher.get(),
+      ]);
+      expect(callCount).toBe(1);
+      expect(results[1]).toBe(results[0]);
+      expect(results[2]).toBe(results[0]);
+      expect(fetcher.hasArrived()).toBe(true);
+      expect(fetcher.resource).toBe(results[0]);
+    });
+
+    it("calls piggyback functions on arrival, or at once if it has arrived", async function () {
+      var calls = [];
+      var fetcher = new adapt_taskutil.Fetcher(async function () {
+        await adapt_taskutil.sleep(5);
+        return "A";
+      });
+      fetcher.piggyback(function (r) {
+        calls.push("before:" + r);
+      });
+      fetcher.start();
+      expect(calls).toEqual([]);
+      await fetcher.get();
+      expect(calls).toEqual(["before:A"]);
+      fetcher.piggyback(function (r) {
+        calls.push("after:" + r);
+      });
+      expect(calls).toEqual(["before:A", "after:A"]);
+    });
+
+    it("keeps calling piggyback functions when one of them throws", async function () {
+      var calls = [];
+      var fetcher = new adapt_taskutil.Fetcher(async function () {
+        return "A";
+      });
+      fetcher.piggyback(function () {
+        throw new Error("piggyback error (expected in this test)");
+      });
+      fetcher.piggyback(function (r) {
+        calls.push(r);
+      });
+      await fetcher.get();
+      expect(calls).toEqual(["A"]);
+    });
+
+    it("rejects get() when the fetch fails", async function () {
+      var fetcher = new adapt_taskutil.Fetcher(async function () {
+        throw new Error("network error");
+      });
+      await expectAsync(fetcher.get()).toBeRejectedWithError("network error");
+      expect(fetcher.hasArrived()).toBe(false);
+    });
+  });
+
+  describe("waitForFetchers", function () {
+    it("resolves true when there is nothing to wait for", async function () {
+      expect(await adapt_taskutil.waitForFetchers([])).toBe(true);
+    });
+
+    it("waits until all the fetchers have arrived", async function () {
+      var make = function (ms) {
+        return new adapt_taskutil.Fetcher(async function () {
+          await adapt_taskutil.sleep(ms);
+          return ms;
+        });
+      };
+      var fetchers = [make(15), make(5)];
+      expect(await adapt_taskutil.waitForFetchers(fetchers)).toBe(true);
+      expect(fetchers.map((f) => f.hasArrived())).toEqual([true, true]);
     });
   });
 });
