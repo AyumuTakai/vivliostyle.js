@@ -22,7 +22,6 @@ import * as adapt_cssvalid from "../../../src/vivliostyle/css-validator";
 import * as adapt_exprs from "../../../src/vivliostyle/exprs";
 import * as adapt_cssparse from "../../../src/vivliostyle/css-parser";
 import * as adapt_csstok from "../../../src/vivliostyle/css-tokenizer";
-import * as adapt_task from "../../../src/vivliostyle/task";
 import * as vivliostyle_plugin from "../../../src/vivliostyle/plugin";
 import * as vivliostyle_test_util_mock_plugin from "../../util/mock/vivliostyle/plugin-mock";
 
@@ -1152,16 +1151,13 @@ describe("css-cascade", function () {
       );
       parseCascade.handler = handler;
       handler.owner.startStylesheet(adapt_cssparse.StylesheetFlavor.AUTHOR);
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(cssText, handler.owner, null, null, null)
-          .then(function (parsed) {
-            expect(parsed).toBe(true);
-            callback(handler.finish());
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(cssText, handler.owner, null, null, null)
+        .then(function (parsed) {
+          expect(parsed).toBe(true);
+          callback(handler.finish());
+          done();
+        });
     }
 
     describe("a syntax error inside the argument", function () {
@@ -2393,16 +2389,13 @@ describe("css-cascade", function () {
         );
         var tokenizer = new adapt_csstok.Tokenizer(text, handler.owner);
 
-        adapt_task.start(function () {
-          adapt_cssparse
-            .parseStylesheet(tokenizer, handler.owner, null, null, null)
-            .then(function (result) {
-              expect(result).toBe(true);
-              fn(handler);
-              done();
-            });
-          return adapt_task.newResult(true);
-        });
+        adapt_cssparse
+          .parseStylesheet(tokenizer, handler.owner, null, null, null)
+          .then(function (result) {
+            expect(result).toBe(true);
+            fn(handler);
+            done();
+          });
       }
 
       it("keeps the rest of the selector list when it contains :host", function (done) {

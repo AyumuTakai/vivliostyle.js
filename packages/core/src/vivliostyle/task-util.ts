@@ -28,6 +28,30 @@ export const sleep = (delay: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, delay));
 
 /**
+ * Length of a time slice in milliseconds. Code that runs for a long time
+ * without waiting for anything should call `timeSlice()` in its loop.
+ */
+const TIME_SLICE = 25;
+let sliceOverTime = 0;
+
+/**
+ * Yields to the event loop (so that the browser can render and handle events)
+ * if the current time slice is over; otherwise returns at once.
+ */
+export async function timeSlice(): Promise<void> {
+  const now = performance.now();
+  if (sliceOverTime === 0) {
+    // First call: the slice started when the caller started to run.
+    sliceOverTime = now + TIME_SLICE;
+  }
+  if (now >= sliceOverTime) {
+    Logging.logger.debug("-- time slice --");
+    await sleep(0);
+    sliceOverTime = performance.now() + TIME_SLICE;
+  }
+}
+
+/**
  * A class that can fetch or compute a resource that may be needed by multiple
  * callers. The first time a resource is requested, it is fetched and then given
  * to everyone requesting it.

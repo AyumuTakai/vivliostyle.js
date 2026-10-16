@@ -19,9 +19,8 @@
 import * as CssCascade from "./css-cascade";
 import * as CssStyler from "./css-styler";
 import * as Net from "./net";
-import * as Task from "./task";
 import * as Logging from "./logging";
-import { waitForFetchersResult } from "./task-bridge";
+import * as TaskUtil from "./task-util";
 
 /**
  * Enable or disable JavaScript in html support
@@ -48,13 +47,13 @@ function getScriptsInOrNearHead(document: Document): HTMLScriptElement[] {
   );
 }
 
-export function loadScript(
+export async function loadScript(
   srcScriptElem: HTMLScriptElement,
   window: Window,
   flags?: { inHead?: boolean; atEnd?: boolean; forceDefer?: boolean },
-): Task.Result<boolean> {
+): Promise<boolean> {
   if (!allowScripts) {
-    return Task.newResult(false);
+    return false;
   }
   if (
     !flags?.inHead &&
@@ -62,7 +61,7 @@ export function loadScript(
     getScriptsInOrNearHead(srcScriptElem.ownerDocument).includes(srcScriptElem)
   ) {
     // The script elements at beginning of body have already been processed.
-    return Task.newResult(false);
+    return false;
   }
 
   const scriptContent = srcScriptElem.textContent;
@@ -75,7 +74,7 @@ export function loadScript(
   if (isMathJax) {
     if (window.document.head.querySelector("script[src*='/MathJax.js']")) {
       // Ignore if MathJax is already loaded
-      return Task.newResult(true);
+      return true;
     }
     if (!window["MathJax"]) {
       // mathjax-config.js
@@ -117,7 +116,7 @@ export function loadScript(
     if (!deferredScripts.some((s) => sameScripts(s, srcScriptElem))) {
       deferredScripts.push(srcScriptElem);
     }
-    return Task.newResult(true);
+    return true;
   }
 
   for (const s of window.document.head.getElementsByTagName("script")) {
@@ -147,11 +146,12 @@ export function loadScript(
   Logging.logger.debug("script:", src);
   if (!src) {
     window.document.head.appendChild(scriptElem);
-    return Task.newResult(true);
+    return true;
   } else {
     const fetcher = Net.loadElement(scriptElem);
     window.document.head.appendChild(scriptElem);
-    return waitForFetchersResult([fetcher]);
+    await TaskUtil.waitForFetchers([fetcher]);
+    return true;
   }
 }
 
@@ -220,18 +220,18 @@ function prepareTextContentForWebFonts(
   return textContentDiv;
 }
 
-export function loadScriptsInHead(
+export async function loadScriptsInHead(
   srcDocument: Document,
   window: Window,
   styler: CssStyler.Styler,
-): Task.Result<boolean> {
+): Promise<boolean> {
   if (!allowScripts) {
-    return Task.newResult(false);
+    return false;
   }
   // Process script elements in head and also beginning of body
   const srcScripts: HTMLScriptElement[] = getScriptsInOrNearHead(srcDocument);
   if (srcScripts.length === 0) {
-    return Task.newResult(false);
+    return false;
   }
   const needPrepareForWebFonts = srcScripts.some(
     (s) => !(s.async || s.defer || s.type === "module"),
@@ -244,81 +244,65 @@ export function loadScriptsInHead(
   const fonts = window.document.fonts; // FontFaceSet
   const savedDollar = window["$"];
   let forceDefer = false;
-  const frame: Task.Frame<boolean> = Task.newFrame("loadScripts");
-  frame
-    .loop(() => {
-      if (srcScripts.length === 0) {
-        if (!needPrepareForWebFonts) {
-          return Task.newResult(false); // break
-        }
-        return frame.sleep(20).thenAsync(() => {
-          if (
-            fonts.status === "loading" ||
-            // for Typekit Web Font Loader (Adobe Fonts)
-            window.document.documentElement.classList.contains("wf-loading") ||
-            // For DynaFont
-            // FIXME: checking the global variable `ret` set in https://dfo.dynacw.co.jp/JSDynaFont/DynaFont.js
-            // would be not very good, because it seems to have been made global by mistake.
-            (window["FontJSON"]?.Font &&
-              window["ret"]?.readyState &&
-              window["ret"].readyState < 4)
-          ) {
-            return Task.newResult(true); // continue
-          }
-          return Task.newResult(false); // break
-        });
+  for (;;) {
+    if (srcScripts.length === 0) {
+      if (!needPrepareForWebFonts) {
+        break;
       }
-      const srcScriptElem = srcScripts.shift();
-      return loadScript(srcScriptElem, window, {
-        inHead: true,
-        forceDefer,
-      }).thenAsync(() => {
-        if (!forceDefer && window["$"] !== savedDollar) {
-          // jQuery `$(…)` does not work before document is loaded, so need to defer
-          deferredScripts.push(srcScriptElem);
-          forceDefer = true;
-        }
-        if (srcScripts.length === 0) {
-          if (needPrepareForWebFonts) {
-            // Some web font loaders (DynaFont, FONTPLUS) need DOMContentLoaded event
-            Logging.logger.debug("dispatchEvent: DOMContentLoaded (document)");
-            window.document.dispatchEvent(new Event("DOMContentLoaded"));
-          }
-        }
-        return Task.newResult(true); // continue
-      });
-    })
-    .then(() => {
-      if (textContentDiv) {
-        textContentDiv.remove();
+      await TaskUtil.sleep(20);
+      if (
+        fonts.status === "loading" ||
+        // for Typekit Web Font Loader (Adobe Fonts)
+        window.document.documentElement.classList.contains("wf-loading") ||
+        // For DynaFont
+        // FIXME: checking the global variable `ret` set in https://dfo.dynacw.co.jp/JSDynaFont/DynaFont.js
+        // would be not very good, because it seems to have been made global by mistake.
+        (window["FontJSON"]?.Font &&
+          window["ret"]?.readyState &&
+          window["ret"].readyState < 4)
+      ) {
+        continue;
       }
-      frame.finish(true);
+      break;
+    }
+    const srcScriptElem = srcScripts.shift();
+    await loadScript(srcScriptElem, window, {
+      inHead: true,
+      forceDefer,
     });
-  return frame.result();
+    if (!forceDefer && window["$"] !== savedDollar) {
+      // jQuery `$(…)` does not work before document is loaded, so need to defer
+      deferredScripts.push(srcScriptElem);
+      forceDefer = true;
+    }
+    if (srcScripts.length === 0) {
+      if (needPrepareForWebFonts) {
+        // Some web font loaders (DynaFont, FONTPLUS) need DOMContentLoaded event
+        Logging.logger.debug("dispatchEvent: DOMContentLoaded (document)");
+        window.document.dispatchEvent(new Event("DOMContentLoaded"));
+      }
+    }
+  }
+  if (textContentDiv) {
+    textContentDiv.remove();
+  }
+  return true;
 }
 
-export function loadScriptsAtEnd(window: Window): Task.Result<boolean> {
+export async function loadScriptsAtEnd(window: Window): Promise<boolean> {
   if (!allowScripts) {
-    return Task.newResult(false);
+    return false;
   }
-  const frame: Task.Frame<boolean> = Task.newFrame("loadScripts");
-  frame
-    .loop(() => {
-      if (deferredScripts.length === 0) {
-        return Task.newResult(false);
-      }
-      return loadScript(deferredScripts.shift(), window, {
-        atEnd: true,
-      }).thenReturn(deferredScripts.length > 0);
-    })
-    .then(() => {
-      Logging.logger.debug("dispatchEvent: DOMContentLoaded (window)");
-      window.dispatchEvent(new Event("DOMContentLoaded"));
-      Logging.logger.debug("dispatchEvent: load (window)");
-      window.dispatchEvent(new Event("load"));
-      frame.finish(true);
+  while (deferredScripts.length > 0) {
+    await loadScript(deferredScripts.shift(), window, {
+      atEnd: true,
     });
-  return frame.result();
+  }
+  Logging.logger.debug("dispatchEvent: DOMContentLoaded (window)");
+  window.dispatchEvent(new Event("DOMContentLoaded"));
+  Logging.logger.debug("dispatchEvent: load (window)");
+  window.dispatchEvent(new Event("load"));
+  return true;
 }
 
 export function hasScripts(window: Window) {

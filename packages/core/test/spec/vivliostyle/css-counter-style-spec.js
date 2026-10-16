@@ -18,7 +18,6 @@
 import * as adapt_cssvalid from "../../../src/vivliostyle/css-validator";
 import * as adapt_ops from "../../../src/vivliostyle/ops";
 import * as adapt_cssparse from "../../../src/vivliostyle/css-parser";
-import * as adapt_task from "../../../src/vivliostyle/task";
 
 describe("css-counter-style", function () {
   /**
@@ -29,16 +28,67 @@ describe("css-counter-style", function () {
   function parseStylesheet(done, css, fn) {
     var validatorSet = adapt_cssvalid.baseValidatorSet();
     var handler = new adapt_ops.StyleParserHandler(validatorSet);
-    adapt_task.start(function () {
-      adapt_cssparse
-        .parseStylesheetFromText(css, handler, "", null, null)
-        .then(function (result) {
-          fn(result, handler.counterStyles);
-          done();
-        });
-      return adapt_task.newResult(true);
-    });
+    adapt_cssparse
+      .parseStylesheetFromText(css, handler, "", null, null)
+      .then(function (result) {
+        fn(result, handler.counterStyles);
+        done();
+      });
   }
+
+  describe("parseStylesheetFromText / parseStylesheetFromURL", function () {
+    var counterStyleCss =
+      '@counter-style imported { system: cyclic; symbols: "#"; }';
+
+    function newHandler() {
+      return new adapt_ops.StyleParserHandler(
+        adapt_cssvalid.baseValidatorSet(),
+      );
+    }
+
+    it("follows @import and processes the imported stylesheet", async function () {
+      var handler = newHandler();
+      var dataUrl = "data:text/css," + encodeURIComponent(counterStyleCss);
+      var result = await adapt_cssparse.parseStylesheetFromText(
+        '@import url("' +
+          dataUrl +
+          '"); @counter-style own { system: cyclic; symbols: "*"; }',
+        handler,
+        "",
+        null,
+        null,
+      );
+      expect(result).toBe(true);
+      expect(handler.counterStyles.getStyle("imported").format(1)).toBe("#");
+      // rules after the @import are processed as well
+      expect(handler.counterStyles.getStyle("own").format(1)).toBe("*");
+    });
+
+    it("parses a stylesheet fetched from a URL", async function () {
+      var handler = newHandler();
+      var result = await adapt_cssparse.parseStylesheetFromURL(
+        "data:text/css," + encodeURIComponent(counterStyleCss),
+        handler,
+        null,
+        null,
+      );
+      expect(result).toBe(true);
+      expect(handler.counterStyles.getStyle("imported").format(1)).toBe("#");
+    });
+
+    it("resolves with true and parses nothing when the URL cannot be fetched", async function () {
+      var handler = newHandler();
+      // Nothing listens on port 1: the request fails with a network error.
+      var result = await adapt_cssparse.parseStylesheetFromURL(
+        "http://127.0.0.1:1/none.css",
+        handler,
+        null,
+        null,
+      );
+      expect(result).toBe(true);
+      expect(handler.counterStyles.getStyle("imported")).toBeNull();
+    });
+  });
 
   describe("cyclic system", function () {
     it("should format positive values with single symbol", function (done) {

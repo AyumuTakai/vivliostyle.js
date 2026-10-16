@@ -79,6 +79,32 @@ describe("task-util", function () {
     });
   });
 
+  describe("timeSlice", function () {
+    it("returns at once while the time slice is not over", async function () {
+      await adapt_taskutil.timeSlice(); // starts a slice
+      var yielded = false;
+      setTimeout(function () {
+        yielded = true;
+      }, 0);
+      await adapt_taskutil.timeSlice();
+      expect(yielded).toBe(false);
+    });
+
+    it("yields to the event loop when the time slice is over", async function () {
+      await adapt_taskutil.timeSlice(); // starts a slice
+      var yielded = false;
+      setTimeout(function () {
+        yielded = true;
+      }, 0);
+      var end = performance.now() + 40;
+      while (performance.now() < end) {
+        // busy loop: the slice (25 ms) is over
+      }
+      await adapt_taskutil.timeSlice();
+      expect(yielded).toBe(true);
+    });
+  });
+
   describe("waitForFetchers", function () {
     it("resolves true when there is nothing to wait for", async function () {
       expect(await adapt_taskutil.waitForFetchers([])).toBe(true);

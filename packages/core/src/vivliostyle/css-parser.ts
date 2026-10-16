@@ -25,8 +25,7 @@ import * as CssTokenizer from "./css-tokenizer";
 import * as Exprs from "./exprs";
 import * as Logging from "./logging";
 import * as Net from "./net";
-import * as Task from "./task";
-import { fromPromise } from "./task-bridge";
+import * as TaskUtil from "./task-util";
 import { TokenType } from "./css-tokenizer";
 
 /**
@@ -3103,7 +3102,7 @@ export function parseStylesheet(
   baseURL: string | null,
   classes: string | null,
   media: string | null,
-): Task.Result<boolean> {
+): Promise<boolean> {
   // A style sheet given as text alone has no base. resolveURL() reads the
   // empty string as no base.
   const base = baseURL ?? "";
@@ -3120,14 +3119,13 @@ export function parseStylesheet(
   return parseStylesheetInternal(tokenizer, handler, base, classes, media);
 }
 
-function parseStylesheetInternal(
+async function parseStylesheetInternal(
   tokenizer: CssTokenizer.Tokenizer,
   handler: DispatchParserHandler,
   baseURL: string,
   classes: string | null,
   media: string | null,
-): Task.Result<boolean> {
-  const frame: Task.Frame<boolean> = Task.newFrame("parseStylesheet");
+): Promise<boolean> {
   const parser = new Parser(actionsBase, tokenizer, handler, baseURL);
   let condition: Css.Expr | null = null;
   if (media) {
@@ -3142,110 +3140,79 @@ function parseStylesheetInternal(
     handler.startMediaRule(condition);
     handler.startRuleBody();
   }
-  frame
-    .loop(() => {
-      while (!parser.runParser(100, false, false, false, false)) {
-        if (parser.importReady) {
-          const resolvedURL = Base.resolveURL(
-            parser.importURL as string,
-            baseURL,
-          );
-          if (parser.importHasLayer) {
-            handler.startLayerRule(parser.importLayerNames);
-            handler.startRuleBody();
-          }
-          if (parser.importCondition) {
-            handler.startMediaRule(parser.importCondition);
-            handler.startRuleBody();
-          }
-          const innerFrame: Task.Frame<boolean> = Task.newFrame(
-            "parseStylesheet.import",
-          );
-          parseStylesheetFromURL(resolvedURL, handler, null, null).then(() => {
-            if (parser.importCondition) {
-              handler.endRule();
-            }
-            if (parser.importHasLayer) {
-              handler.endRule();
-            }
-            parser.importReady = false;
-            parser.importURL = null;
-            parser.importCondition = null;
-            parser.importHasLayer = false;
-            parser.importLayerNames = null;
-            innerFrame.finish(true);
-          });
-          return innerFrame.result();
-        }
-        const r = frame.timeSlice();
-        if (r.isPending) {
-          return r;
-        }
+  while (!parser.runParser(100, false, false, false, false)) {
+    if (parser.importReady) {
+      const resolvedURL = Base.resolveURL(parser.importURL as string, baseURL);
+      if (parser.importHasLayer) {
+        handler.startLayerRule(parser.importLayerNames);
+        handler.startRuleBody();
       }
-      return Task.newResult(false);
-    })
-    .then(() => {
-      if (condition) {
+      if (parser.importCondition) {
+        handler.startMediaRule(parser.importCondition);
+        handler.startRuleBody();
+      }
+      await parseStylesheetFromURL(resolvedURL, handler, null, null);
+      if (parser.importCondition) {
         handler.endRule();
       }
-      frame.finish(true);
-    });
-  return frame.result();
+      if (parser.importHasLayer) {
+        handler.endRule();
+      }
+      parser.importReady = false;
+      parser.importURL = null;
+      parser.importCondition = null;
+      parser.importHasLayer = false;
+      parser.importLayerNames = null;
+      continue;
+    }
+    await TaskUtil.timeSlice();
+  }
+  if (condition) {
+    handler.endRule();
+  }
+  return true;
 }
 
-export function parseStylesheetFromText(
+export async function parseStylesheetFromText(
   text: string,
   handler: DispatchParserHandler,
   baseURL: string | null,
   classes: string | null,
   media: string | null,
-): Task.Result<boolean> {
-  return Task.handle(
-    "parseStylesheetFromText",
-    (frame) => {
-      const tok = new CssTokenizer.Tokenizer(text, handler);
-      parseStylesheet(tok, handler, baseURL, classes, media).thenFinish(frame);
-    },
-    (frame, err) => {
-      Logging.logger.warn(err, `Failed to parse stylesheet text: ${text}`);
-      frame.finish(false);
-    },
-  );
+): Promise<boolean> {
+  try {
+    const tok = new CssTokenizer.Tokenizer(text, handler);
+    return await parseStylesheet(tok, handler, baseURL, classes, media);
+  } catch (err) {
+    Logging.logger.warn(err, `Failed to parse stylesheet text: ${text}`);
+    return false;
+  }
 }
 
-export function parseStylesheetFromURL(
+export async function parseStylesheetFromURL(
   url: string,
   handler: DispatchParserHandler,
   classes: string | null,
   media: string | null,
-): Task.Result<boolean> {
-  return Task.handle(
-    "parseStylesheetFromURL",
-    (frame) => {
-      fromPromise(Net.fetchFromURL(url), "fetchFromURL").then((response) => {
-        if (!response.responseText) {
-          frame.finish(true);
-        } else {
-          parseStylesheetFromText(
-            response.responseText,
-            handler,
-            url,
-            classes,
-            media,
-          ).then((result) => {
-            if (!result) {
-              Logging.logger.warn(`Failed to parse stylesheet from ${url}`);
-            }
-            frame.finish(true);
-          });
-        }
-      });
-    },
-    (frame, err) => {
-      Logging.logger.warn(err, "Exception while fetching and parsing:", url);
-      frame.finish(true);
-    },
-  );
+): Promise<boolean> {
+  try {
+    const response = await Net.fetchFromURL(url);
+    if (response.responseText) {
+      const result = await parseStylesheetFromText(
+        response.responseText,
+        handler,
+        url,
+        classes,
+        media,
+      );
+      if (!result) {
+        Logging.logger.warn(`Failed to parse stylesheet from ${url}`);
+      }
+    }
+  } catch (err) {
+    Logging.logger.warn(err, "Exception while fetching and parsing:", url);
+  }
+  return true;
 }
 
 export function parseValue(

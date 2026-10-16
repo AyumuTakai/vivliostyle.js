@@ -52,7 +52,11 @@ import * as PageMaster from "./page-master";
 import * as Scripts from "./scripts";
 import * as Task from "./task";
 import * as TaskUtil from "./task-util";
-import { fetcherResult, runLegacy, waitForFetchersResult } from "./task-bridge";
+import {
+  fetcherResult,
+  fromPromise,
+  waitForFetchersResult,
+} from "./task-bridge";
 import * as TextPolyfill from "./text-polyfill";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
@@ -576,10 +580,13 @@ export class StyleInstance
     }
     this.fontMapper.findOrLoadFonts(srcFaces, this.faces).then(() => {
       // JavaScript in HTML documents support
-      Scripts.loadScriptsInHead(
-        this.xmldoc.document,
-        this.viewport.window,
-        this.styler,
+      fromPromise(
+        Scripts.loadScriptsInHead(
+          this.xmldoc.document,
+          this.viewport.window,
+          this.styler,
+        ),
+        "loadScriptsInHead",
       ).thenFinish(frame);
     });
     return frame.result();
@@ -3912,61 +3919,45 @@ export class OPSDocStore extends Net.ResourceStore<XmlDoc.XMLDocHolder> {
         }
         let fetcher = this.styleFetcherByKey[key];
         if (!fetcher) {
-          // The stylesheet parsers are still legacy (Task-based) functions.
-          fetcher = new TaskUtil.Fetcher<Style>(
-            () =>
-              runLegacy(() => {
-                const innerFrame: Task.Frame<Style> =
-                  Task.newFrame("fetchStylesheet");
-                let index = 0;
-                const sph = new StyleParserHandler(this.validatorSet);
-                innerFrame
-                  .loop(() => {
-                    if (index < sources.length) {
-                      const source = sources[index++];
-                      sph.startStylesheet(source.flavor);
-                      if (source.text != null) {
-                        return CssParser.parseStylesheetFromText(
-                          source.text,
-                          sph,
-                          source.url,
-                          source.classes,
-                          source.media,
-                        ).thenReturn(true);
-                      } else {
-                        return CssParser.parseStylesheetFromURL(
-                          source.url,
-                          sph,
-                          source.classes,
-                          source.media,
-                        );
-                      }
-                    }
-                    return Task.newResult(false);
-                  })
-                  .then(() => {
-                    const cascade = sph.cascadeParserHandler.finish();
-                    style = new Style(
-                      this,
-                      sph.rootScope,
-                      sph.pageScope,
-                      cascade,
-                      sph.rootBox,
-                      sortFontFaces(sph.fontFaces),
-                      sph.footnoteProps,
-                      sph.flowProps,
-                      sph.viewportProps,
-                      sph.pageProps,
-                      sph.counterStyles,
-                    );
-                    this.styleByKey[key] = style;
-                    delete this.styleFetcherByKey[key];
-                    innerFrame.finish(style);
-                  });
-                return innerFrame.result();
-              }, "fetchStylesheet"),
-            `FetchStylesheet ${url}`,
-          );
+          fetcher = new TaskUtil.Fetcher<Style>(async () => {
+            const sph = new StyleParserHandler(this.validatorSet);
+            for (const source of sources) {
+              sph.startStylesheet(source.flavor);
+              if (source.text != null) {
+                await CssParser.parseStylesheetFromText(
+                  source.text,
+                  sph,
+                  source.url,
+                  source.classes,
+                  source.media,
+                );
+              } else {
+                await CssParser.parseStylesheetFromURL(
+                  source.url,
+                  sph,
+                  source.classes,
+                  source.media,
+                );
+              }
+            }
+            const cascade = sph.cascadeParserHandler.finish();
+            style = new Style(
+              this,
+              sph.rootScope,
+              sph.pageScope,
+              cascade,
+              sph.rootBox,
+              sortFontFaces(sph.fontFaces),
+              sph.footnoteProps,
+              sph.flowProps,
+              sph.viewportProps,
+              sph.pageProps,
+              sph.counterStyles,
+            );
+            this.styleByKey[key] = style;
+            delete this.styleFetcherByKey[key];
+            return style;
+          }, `FetchStylesheet ${url}`);
           this.styleFetcherByKey[key] = fetcher;
           fetcher.start();
         }

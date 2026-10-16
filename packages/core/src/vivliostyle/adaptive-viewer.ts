@@ -31,7 +31,7 @@ import * as Plugin from "./plugin";
 import * as Profile from "./profile";
 import * as Scripts from "./scripts";
 import * as Task from "./task";
-import { waitForFetchersResult } from "./task-bridge";
+import { fromPromise, waitForFetchersResult } from "./task-bridge";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
 import {
@@ -1111,7 +1111,10 @@ export class AdaptiveViewer {
                             Scripts.allowScripts &&
                             Scripts.hasScripts(this.window)
                           ) {
-                            Scripts.loadScriptsAtEnd(this.window).then(() => {
+                            fromPromise(
+                              Scripts.loadScriptsAtEnd(this.window),
+                              "loadScriptsAtEnd",
+                            ).then(() => {
                               if (this.renderAllPages) {
                                 this.setReadyState(
                                   Constants.ReadyState.COMPLETE,

@@ -45,7 +45,7 @@ import * as Scripts from "./scripts";
 import * as SemanticFootnote from "./semantic-footnote";
 import * as Task from "./task";
 import * as TaskUtil from "./task-util";
-import { waitForFetchersResult } from "./task-bridge";
+import { fromPromise, waitForFetchersResult } from "./task-bridge";
 import * as Urls from "./urls";
 import * as Vtree from "./vtree";
 import * as Layout from "./layout";
@@ -1641,9 +1641,9 @@ export class ViewFactory
       element.localName === "script" &&
       element.namespaceURI === Base.NS.XHTML
     ) {
-      Scripts.loadScript(
-        element as HTMLScriptElement,
-        this.viewport.window,
+      fromPromise(
+        Scripts.loadScript(element as HTMLScriptElement, this.viewport.window),
+        "loadScript",
       ).thenFinish(frame);
       return frame.result();
     }

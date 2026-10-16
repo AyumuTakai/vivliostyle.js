@@ -21,7 +21,6 @@ import * as adapt_css from "../../../src/vivliostyle/css";
 import * as adapt_exprs from "../../../src/vivliostyle/exprs";
 import * as adapt_cssparse from "../../../src/vivliostyle/css-parser";
 import * as adapt_cssvalid from "../../../src/vivliostyle/css-validator";
-import * as adapt_task from "../../../src/vivliostyle/task";
 import * as vivliostyle_logging from "../../../src/vivliostyle/logging";
 
 describe("css-validator", function () {
@@ -46,16 +45,13 @@ describe("css-validator", function () {
   function parseCascade(cssText, done, callback) {
     var handler = cascadeParserHandler(adapt_cssvalid.baseValidatorSet());
     handler.owner.startStylesheet(adapt_cssparse.StylesheetFlavor.AUTHOR);
-    adapt_task.start(function () {
-      adapt_cssparse
-        .parseStylesheetFromText(cssText, handler.owner, null, null, null)
-        .then(function (result) {
-          expect(result).toBe(true);
-          callback(handler.finish(), handler);
-          done();
-        });
-      return adapt_task.newResult(true);
-    });
+    adapt_cssparse
+      .parseStylesheetFromText(cssText, handler.owner, null, null, null)
+      .then(function (result) {
+        expect(result).toBe(true);
+        callback(handler.finish(), handler);
+        done();
+      });
   }
 
   describe("background shorthand regression", function () {
@@ -495,22 +491,19 @@ describe("css-validator", function () {
         vivliostyle_logging.LogLevel.WARN,
         warnListener,
       );
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(
-            ".test { foo-or: bar; }\n.test2 { foo-or: baz biz; }",
-            handler.owner,
-            null,
-            null,
-            null,
-          )
-          .then(function (result) {
-            expect(result).toBe(true);
-            expect(warnListener).not.toHaveBeenCalled();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(
+          ".test { foo-or: bar; }\n.test2 { foo-or: baz biz; }",
+          handler.owner,
+          null,
+          null,
+          null,
+        )
+        .then(function (result) {
+          expect(result).toBe(true);
+          expect(warnListener).not.toHaveBeenCalled();
+          done();
+        });
     });
 
     it("rejects invalid single values for text-autospace-like nested alternates", function () {
@@ -549,29 +542,26 @@ describe("css-validator", function () {
         vivliostyle_logging.LogLevel.WARN,
         warnListener,
       );
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(
-            ".test { foo: bar; }\n" +
-              ".test2 { foo: BAR; }" +
-              ".test3 { foo: Bar; }" +
-              ".test4 { foo: bAr; }" +
-              ".test5 { foo: baR; }" +
-              ".test6 { foo: BAZ; }" +
-              ".test6 { foo: biz; }" +
-              "",
-            handler.owner,
-            null,
-            null,
-            null,
-          )
-          .then(function (result) {
-            expect(result).toBe(true);
-            expect(warnListener).not.toHaveBeenCalled();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(
+          ".test { foo: bar; }\n" +
+            ".test2 { foo: BAR; }" +
+            ".test3 { foo: Bar; }" +
+            ".test4 { foo: bAr; }" +
+            ".test5 { foo: baR; }" +
+            ".test6 { foo: BAZ; }" +
+            ".test6 { foo: biz; }" +
+            "",
+          handler.owner,
+          null,
+          null,
+          null,
+        )
+        .then(function (result) {
+          expect(result).toBe(true);
+          expect(warnListener).not.toHaveBeenCalled();
+          done();
+        });
     });
 
     it("should parse selector functions through the dispatch owner", function (done) {
@@ -583,22 +573,19 @@ describe("css-validator", function () {
         vivliostyle_logging.LogLevel.WARN,
         warnListener,
       );
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(
-            '@namespace epub "http://www.idpf.org/2007/ops";\n:not(a[epub|type~="noteref"], a[epub\\:type~="noteref"], a[role~="doc-noteref"])::footnote-call { content: counter(footnote); }',
-            handler.owner,
-            null,
-            null,
-            null,
-          )
-          .then(function (result) {
-            expect(result).toBe(true);
-            expect(warnListener).not.toHaveBeenCalled();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(
+          '@namespace epub "http://www.idpf.org/2007/ops";\n:not(a[epub|type~="noteref"], a[epub\\:type~="noteref"], a[role~="doc-noteref"])::footnote-call { content: counter(footnote); }',
+          handler.owner,
+          null,
+          null,
+          null,
+        )
+        .then(function (result) {
+          expect(result).toBe(true);
+          expect(warnListener).not.toHaveBeenCalled();
+          done();
+        });
     });
     it("should parse semantic footnote noteref default selectors", function (done) {
       var validatorSet = adapt_cssvalid.baseValidatorSet();
@@ -609,22 +596,19 @@ describe("css-validator", function () {
         vivliostyle_logging.LogLevel.WARN,
         warnListener,
       );
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(
-            '@namespace epub "http://www.idpf.org/2007/ops";\na[epub|type="noteref"]:not(sup > *, :has(> sup)),\na[epub\\:type="noteref"]:not(sup > *, :has(> sup)),\na[role="doc-noteref"]:not(sup > *, :has(> sup)) { font-size: 0.75em; vertical-align: super; line-height: 0; }',
-            handler.owner,
-            null,
-            null,
-            null,
-          )
-          .then(function (result) {
-            expect(result).toBe(true);
-            expect(warnListener).not.toHaveBeenCalled();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(
+          '@namespace epub "http://www.idpf.org/2007/ops";\na[epub|type="noteref"]:not(sup > *, :has(> sup)),\na[epub\\:type="noteref"]:not(sup > *, :has(> sup)),\na[role="doc-noteref"]:not(sup > *, :has(> sup)) { font-size: 0.75em; vertical-align: super; line-height: 0; }',
+          handler.owner,
+          null,
+          null,
+          null,
+        )
+        .then(function (result) {
+          expect(result).toBe(true);
+          expect(warnListener).not.toHaveBeenCalled();
+          done();
+        });
     });
     it("should parse validator and space rule", function (done) {
       var validatorSet = new adapt_cssvalid.ValidatorSet();
@@ -636,22 +620,19 @@ describe("css-validator", function () {
         vivliostyle_logging.LogLevel.WARN,
         warnListener,
       );
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(
-            ".test { foo: bar; }\n.test2 { foo: bar baz boo; }",
-            handler.owner,
-            null,
-            null,
-            null,
-          )
-          .then(function (result) {
-            expect(result).toBe(true);
-            expect(warnListener).not.toHaveBeenCalled();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(
+          ".test { foo: bar; }\n.test2 { foo: bar baz boo; }",
+          handler.owner,
+          null,
+          null,
+          null,
+        )
+        .then(function (result) {
+          expect(result).toBe(true);
+          expect(warnListener).not.toHaveBeenCalled();
+          done();
+        });
     });
 
     it("should parse validator and comma rule", function (done) {
@@ -664,22 +645,19 @@ describe("css-validator", function () {
         vivliostyle_logging.LogLevel.WARN,
         warnListener,
       );
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(
-            ".test { foo: bar,baz; }\n .test2{ foo: bar; }",
-            handler.owner,
-            null,
-            null,
-            null,
-          )
-          .then(function (result) {
-            expect(result).toBe(true);
-            expect(warnListener).not.toHaveBeenCalled();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(
+          ".test { foo: bar,baz; }\n .test2{ foo: bar; }",
+          handler.owner,
+          null,
+          null,
+          null,
+        )
+        .then(function (result) {
+          expect(result).toBe(true);
+          expect(warnListener).not.toHaveBeenCalled();
+          done();
+        });
     });
 
     it("should parse validator and complex comma rule", function (done) {
@@ -692,22 +670,19 @@ describe("css-validator", function () {
         vivliostyle_logging.LogLevel.WARN,
         warnListener,
       );
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(
-            ".test { foo-comma: none; }\n.test2 { foo-comma: bar,baz; }\n .test3 { foo-comma: bar; }",
-            handler.owner,
-            null,
-            null,
-            null,
-          )
-          .then(function (result) {
-            expect(result).toBe(true);
-            expect(warnListener).not.toHaveBeenCalled();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(
+          ".test { foo-comma: none; }\n.test2 { foo-comma: bar,baz; }\n .test3 { foo-comma: bar; }",
+          handler.owner,
+          null,
+          null,
+          null,
+        )
+        .then(function (result) {
+          expect(result).toBe(true);
+          expect(warnListener).not.toHaveBeenCalled();
+          done();
+        });
     });
 
     it("should parse validator and complex space rule", function (done) {
@@ -720,22 +695,19 @@ describe("css-validator", function () {
         vivliostyle_logging.LogLevel.WARN,
         warnListener,
       );
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(
-            ".test { spacefoo: none; }\n.test2 { spacefoo: bar baz; }\n .test3 { spacefoo: bar; }",
-            handler.owner,
-            null,
-            null,
-            null,
-          )
-          .then(function (result) {
-            expect(result).toBe(true);
-            expect(warnListener).not.toHaveBeenCalled();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(
+          ".test { spacefoo: none; }\n.test2 { spacefoo: bar baz; }\n .test3 { spacefoo: bar; }",
+          handler.owner,
+          null,
+          null,
+          null,
+        )
+        .then(function (result) {
+          expect(result).toBe(true);
+          expect(warnListener).not.toHaveBeenCalled();
+          done();
+        });
     });
     it("should parse rule that contains function", function (done) {
       var validatorSet = new adapt_cssvalid.ValidatorSet();
@@ -754,25 +726,22 @@ describe("css-validator", function () {
         vivliostyle_logging.LogLevel.WARN,
         warnListener,
       );
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(
-            ".test { accept-function: the-function(foo bar); }\n" +
-              ".test2 { accept-function: the-function(foo bar, bar baz); }\n" +
-              ".test3 { accept-function: the-function(fff, foo bar, bar baz); }\n" +
-              ".test4 { accept-function: the-function(bb bz, foo bar, bar baz); }",
-            handler.owner,
-            null,
-            null,
-            null,
-          )
-          .then(function (result) {
-            expect(result).toBe(true);
-            expect(warnListener).not.toHaveBeenCalled();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(
+          ".test { accept-function: the-function(foo bar); }\n" +
+            ".test2 { accept-function: the-function(foo bar, bar baz); }\n" +
+            ".test3 { accept-function: the-function(fff, foo bar, bar baz); }\n" +
+            ".test4 { accept-function: the-function(bb bz, foo bar, bar baz); }",
+          handler.owner,
+          null,
+          null,
+          null,
+        )
+        .then(function (result) {
+          expect(result).toBe(true);
+          expect(warnListener).not.toHaveBeenCalled();
+          done();
+        });
     });
     it("should parse rule that contains slash", function (done) {
       var validatorSet = new adapt_cssvalid.ValidatorSet();
@@ -784,22 +753,19 @@ describe("css-validator", function () {
         vivliostyle_logging.LogLevel.WARN,
         warnListener,
       );
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(
-            ".test { foo: bar( 10 / 10 ) ; }\n" + ".test2 { foo: bar( 10 ) ; }",
-            handler.owner,
-            null,
-            null,
-            null,
-          )
-          .then(function (result) {
-            expect(result).toBe(true);
-            expect(warnListener).not.toHaveBeenCalled();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(
+          ".test { foo: bar( 10 / 10 ) ; }\n" + ".test2 { foo: bar( 10 ) ; }",
+          handler.owner,
+          null,
+          null,
+          null,
+        )
+        .then(function (result) {
+          expect(result).toBe(true);
+          expect(warnListener).not.toHaveBeenCalled();
+          done();
+        });
     });
     it("should parse font shorthand rule", function (done) {
       var validatorSet = new adapt_cssvalid.ValidatorSet();
@@ -833,28 +799,25 @@ describe("css-validator", function () {
         vivliostyle_logging.LogLevel.WARN,
         warnListener,
       );
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheetFromText(
-            ".test  { font: 80% sans-serif ; }\n" +
-              '.test2 { font: 12px/14px "Times" ; }\n' +
-              '.test3 { font: oblique small-caps bold 12px/14px "Times" ; }\n' +
-              '.test4 { font: small-caps oblique 12px "Times" ; }\n' +
-              '.test5 { font: oblique small-caps bold ultra-condensed 12px/14px "Times" ; }\n' +
-              '.test6 { font: small-caps wider oblique 12px "Times" ; }\n' +
-              ".test7 { font: status-bar ; }",
-            handler.owner,
-            null,
-            null,
-            null,
-          )
-          .then(function (result) {
-            expect(result).toBe(true);
-            expect(warnListener).not.toHaveBeenCalled();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheetFromText(
+          ".test  { font: 80% sans-serif ; }\n" +
+            '.test2 { font: 12px/14px "Times" ; }\n' +
+            '.test3 { font: oblique small-caps bold 12px/14px "Times" ; }\n' +
+            '.test4 { font: small-caps oblique 12px "Times" ; }\n' +
+            '.test5 { font: oblique small-caps bold ultra-condensed 12px/14px "Times" ; }\n' +
+            '.test6 { font: small-caps wider oblique 12px "Times" ; }\n' +
+            ".test7 { font: status-bar ; }",
+          handler.owner,
+          null,
+          null,
+          null,
+        )
+        .then(function (result) {
+          expect(result).toBe(true);
+          expect(warnListener).not.toHaveBeenCalled();
+          done();
+        });
     });
   });
 });

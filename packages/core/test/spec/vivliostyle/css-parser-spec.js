@@ -20,7 +20,6 @@ import * as adapt_cssparse from "../../../src/vivliostyle/css-parser";
 import * as adapt_cssnesting from "../../../src/vivliostyle/css-nesting";
 import * as adapt_csstok from "../../../src/vivliostyle/css-tokenizer";
 import * as adapt_exprs from "../../../src/vivliostyle/exprs";
-import * as adapt_task from "../../../src/vivliostyle/task";
 
 describe("css-parser", function () {
   describe("Parser", function () {
@@ -44,16 +43,13 @@ describe("css-parser", function () {
     function parse(done, text, fn) {
       var tokenizer = new adapt_csstok.Tokenizer(text, handler);
 
-      adapt_task.start(function () {
-        adapt_cssparse
-          .parseStylesheet(tokenizer, handler, null, null, null)
-          .then(function (result) {
-            expect(result).toBe(true);
-            fn();
-            done();
-          });
-        return adapt_task.newResult(true);
-      });
+      adapt_cssparse
+        .parseStylesheet(tokenizer, handler, null, null, null)
+        .then(function (result) {
+          expect(result).toBe(true);
+          fn();
+          done();
+        });
     }
 
     function parseSupports(done, text, fn) {
@@ -1590,18 +1586,15 @@ describe("css-parser", function () {
         spyOn(dispatch, "errorMsg");
         var tokenizer = new adapt_csstok.Tokenizer("@layer A;", dispatch);
 
-        adapt_task.start(function () {
-          adapt_cssparse
-            .parseStylesheet(tokenizer, dispatch, null, null, null)
-            .then(function () {
-              expect(dispatch.errorMsg).toHaveBeenCalled();
-              // A skipping handler would never be taken back, swallowing
-              // everything that follows.
-              expect(dispatch.slave).toBe(dispatch.initialSlave);
-              done();
-            });
-          return adapt_task.newResult(true);
-        });
+        adapt_cssparse
+          .parseStylesheet(tokenizer, dispatch, null, null, null)
+          .then(function () {
+            expect(dispatch.errorMsg).toHaveBeenCalled();
+            // A skipping handler would never be taken back, swallowing
+            // everything that follows.
+            expect(dispatch.slave).toBe(dispatch.initialSlave);
+            done();
+          });
       });
     });
 
