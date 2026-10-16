@@ -36,7 +36,7 @@ import * as OPS from "./ops";
 import * as Plugin from "./plugin";
 import * as SemanticFootnote from "./semantic-footnote";
 import * as Task from "./task";
-import { fromAbortable, fromPromise, runLegacy } from "./task-bridge";
+import { fromPromise, runLegacy } from "./task-bridge";
 import { sleep } from "./task-util";
 import * as Toc from "./toc";
 import * as Vgen from "./vgen";
@@ -1615,38 +1615,44 @@ export class OPFView implements Vgen.CustomRendererFactory {
    * @param spineIndex The target spine index to navigate to
    * @param sync If true, skip waiting (synchronous mode)
    */
-  private waitForPreviousSpines(
+  private async waitForPreviousSpines(
     spineIndex: number,
     sync: boolean,
-  ): Task.Result<boolean> {
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     if (sync || spineIndex === 0) {
-      return Task.newResult(true);
+      return true;
     }
-    const frame: Task.Frame<boolean> = Task.newFrame("waitForPreviousSpines");
-    frame
-      .loopWithFrame((loopFrame) => {
-        // Check if any previous spine item is not yet complete
-        let allPreviousComplete = true;
-        for (let i = 0; i < spineIndex; i++) {
-          const prevItem = this.spineItems[i];
-          if (!prevItem || !prevItem.complete) {
-            allPreviousComplete = false;
-            break;
-          }
+    for (;;) {
+      // Check if any previous spine item is not yet complete
+      let allPreviousComplete = true;
+      for (let i = 0; i < spineIndex; i++) {
+        const prevItem = this.spineItems[i];
+        if (!prevItem || !prevItem.complete) {
+          allPreviousComplete = false;
+          break;
         }
-        if (allPreviousComplete) {
-          loopFrame.breakLoop();
-        } else {
-          // Wait and retry
-          frame.sleep(100).then(() => {
-            loopFrame.continueLoop();
-          });
-        }
-      })
-      .then(() => {
-        frame.finish(true);
-      });
-    return frame.result();
+      }
+      if (allPreviousComplete) {
+        return true;
+      }
+      await this.waitForRenderChange(signal);
+    }
+  }
+
+  /**
+   * Waits until the rendering state may have changed: a renderer released the
+   * lock or finished a rebuild. Pages that appear while a renderer holds the
+   * lock are deliberately not announced, so that a navigation does not take a
+   * page before the renderer has finished its follow-up work on it. It also
+   * wakes up after 100 ms, in case a change was not announced.
+   */
+  private waitForRenderChange(signal?: AbortSignal): Promise<void> {
+    return this.renderLock.changed(100, signal);
+  }
+
+  private notifyRenderChange(): void {
+    this.renderLock?.notify();
   }
 
   getCurrentPageProgression(
@@ -2597,6 +2603,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
   private clearFollowingSpineRelayoutState(): void {
     this.relayoutingFollowingSpines = false;
     this.relayoutingFollowingSpineStart = null;
+    this.notifyRenderChange();
   }
 
   private flushDeferredPageReplacements(viewItem: OPFViewItem): void {
@@ -2719,10 +2726,20 @@ export class OPFView implements Vgen.CustomRendererFactory {
       this.spineItems[spineIndex] = null;
       this.spineItemLoading[spineIndex] = null;
     }
+    this.notifyRenderChange();
     return lastInvalidatedSpine;
   }
 
-  private async rerenderDeferredFollowingSpines(
+  private rerenderDeferredFollowingSpines(
+    position: Position,
+    context: RenderContext,
+  ): Promise<PageAndPosition | null> {
+    return this.withRenderLock(context, () =>
+      this.rerenderDeferredFollowingSpinesLocked(position, context),
+    );
+  }
+
+  private async rerenderDeferredFollowingSpinesLocked(
     position: Position,
     context: RenderContext,
   ): Promise<PageAndPosition | null> {
@@ -2946,29 +2963,24 @@ export class OPFView implements Vgen.CustomRendererFactory {
    * @param sync If true, find the page synchronously (not waiting another
    *     rendering task)
    */
-  findPage(
+  async findPage(
     position: Position,
     sync: boolean,
-  ): Task.Result<PageAndPosition | null> {
-    const frame: Task.Frame<PageAndPosition | null> = Task.newFrame("findPage");
-    const waitForSuffixRelayout = (): void => {
-      if (sync) {
-        frame.finish(null);
-        return;
-      }
-      frame.sleep(100).then(() => {
-        this.findPage(position, sync).then((result) => frame.finish(result));
-      });
-    };
-
-    this.waitForPreviousSpines(position.spineIndex, sync).then(() => {
+    context: RenderContext = defaultRenderContext(),
+  ): Promise<PageAndPosition | null> {
+    const signal = context.signal;
+    for (;;) {
+      await this.waitForPreviousSpines(position.spineIndex, sync, signal);
       const relayoutingSpine = this.relayoutingFollowingSpineStart;
       if (relayoutingSpine != null && relayoutingSpine <= position.spineIndex) {
         // relayoutDeferredFollowingSpines clears the pending marker before it
         // rebuilds the suffix. Keep navigation behind the in-progress boundary
         // so it cannot observe or concurrently lay out the partial suffix.
-        waitForSuffixRelayout();
-        return;
+        if (sync) {
+          return null;
+        }
+        await this.waitForRenderChange(signal);
+        continue;
       }
       const firstInvalidSpine = this.deferredFollowingSpineRelayoutStart;
       if (
@@ -2979,88 +2991,77 @@ export class OPFView implements Vgen.CustomRendererFactory {
           // Full pagination owns the shared StyleInstance and will consume
           // the suffix marker. Do not let navigation return a cached page
           // from that invalid suffix while the rebuild is still pending.
-          waitForSuffixRelayout();
-          return;
+          if (sync) {
+            return null;
+          }
+          await this.waitForRenderChange(signal);
+          continue;
         }
-        if (this.isRenderingPageByAnotherOwner(defaultRenderContext().owner)) {
-          // Another navigation task is already rebuilding the invalid suffix.
+        if (this.renderLock.isHeldByAnother(context.owner)) {
+          // Another navigation is already rebuilding the invalid suffix.
           // Retry after it has released the shared layout and counter state.
-          waitForSuffixRelayout();
-          return;
+          if (sync) {
+            return null;
+          }
+          await this.waitForRenderChange(signal);
+          continue;
         }
         // A cached page in the invalid suffix must not bypass the deferred
         // rebuild. renderPage() consumes the marker before returning it.
-        this.renderPageResult(position).then((result) => frame.finish(result));
-        return;
+        return this.renderPage(position, context);
       }
-      this.getPageViewItemResult(position.spineIndex).then((viewItem) => {
-        if (!viewItem) {
-          frame.finish(null);
-          return;
+      break;
+    }
+    const viewItem = await this.getPageViewItem(position.spineIndex);
+    if (!viewItem) {
+      return null;
+    }
+    let resultPage: Vtree.Page | null = null;
+    let pageIndex: number;
+    for (;;) {
+      const normalizedPosition = this.normalizeSeekPosition(position, viewItem);
+      pageIndex = normalizedPosition.pageIndex;
+      resultPage = viewItem.pages[pageIndex];
+      if (resultPage) {
+        break;
+      } else if (viewItem.complete) {
+        pageIndex = viewItem.pages.length - 1;
+        resultPage = viewItem.pages[pageIndex];
+        break;
+      } else if (sync) {
+        const result = await this.renderPage(normalizedPosition, context);
+        if (result) {
+          resultPage = result.page;
+          pageIndex = result.position.pageIndex;
         }
-        let resultPage: Vtree.Page | null = null;
-        let pageIndex: number;
-        frame
-          .loopWithFrame((loopFrame) => {
-            const normalizedPosition = this.normalizeSeekPosition(
-              position,
-              viewItem,
-            );
-            pageIndex = normalizedPosition.pageIndex;
-            resultPage = viewItem.pages[pageIndex];
-            if (resultPage) {
-              loopFrame.breakLoop();
-            } else if (viewItem.complete) {
-              pageIndex = viewItem.pages.length - 1;
-              resultPage = viewItem.pages[pageIndex];
-              loopFrame.breakLoop();
-            } else if (sync) {
-              this.renderPageResult(normalizedPosition).then((result) => {
-                if (result) {
-                  resultPage = result.page;
-                  pageIndex = result.position.pageIndex;
-                }
-                loopFrame.breakLoop();
-              });
-            } else if (
-              this.isRenderingPageByAnotherOwner(defaultRenderContext().owner)
-            ) {
-              // A background task is already materializing pages. Wait for
-              // the requested page to appear instead of rendering the same
-              // shared StyleInstance and CounterStore concurrently (Issue #2047).
-              frame.sleep(100).then(() => {
-                loopFrame.continueLoop();
-              });
-            } else if (
-              pageIndex < viewItem.layoutPositions.length &&
-              !viewItem.pages[pageIndex]
-            ) {
-              // The page has a pending layout position that was never
-              // materialized (e.g. created during target-text resolution
-              // but blocked from cascading, or the spine was recreated
-              // during navigation). Render it now instead of polling
-              // forever waiting for a nonexistent concurrent task.
-              this.renderPageResult(normalizedPosition).then((result) => {
-                if (result) {
-                  resultPage = result.page;
-                  pageIndex = result.position.pageIndex;
-                }
-                loopFrame.breakLoop();
-              });
-            } else {
-              // Wait for the layout task and retry
-              frame.sleep(100).then(() => {
-                loopFrame.continueLoop();
-              });
-            }
-          })
-          .then(() => {
-            Asserts.assert(resultPage);
-            frame.finish(makePageAndPosition(resultPage, pageIndex));
-          });
-      });
-    });
-    return frame.result();
+        break;
+      } else if (this.renderLock.isHeldByAnother(context.owner)) {
+        // A background renderer is already materializing pages. Wait for
+        // the requested page to appear instead of rendering the same
+        // shared StyleInstance and CounterStore concurrently (Issue #2047).
+        await this.waitForRenderChange(signal);
+      } else if (
+        pageIndex < viewItem.layoutPositions.length &&
+        !viewItem.pages[pageIndex]
+      ) {
+        // The page has a pending layout position that was never
+        // materialized (e.g. created during target-text resolution
+        // but blocked from cascading, or the spine was recreated
+        // during navigation). Render it now instead of polling
+        // forever waiting for a nonexistent concurrent task.
+        const result = await this.renderPage(normalizedPosition, context);
+        if (result) {
+          resultPage = result.page;
+          pageIndex = result.position.pageIndex;
+        }
+        break;
+      } else {
+        // Wait for the layout task and retry
+        await this.waitForRenderChange(signal);
+      }
+    }
+    Asserts.assert(resultPage);
+    return makePageAndPosition(resultPage, pageIndex);
   }
 
   /**
@@ -3073,9 +3074,15 @@ export class OPFView implements Vgen.CustomRendererFactory {
     position: Position,
     context: RenderContext = defaultRenderContext(),
   ): Promise<PageAndPosition | null> {
-    if (!this.renderLock.tryAcquire(context.owner)) {
-      await this.renderLock.acquire(context.owner, context.signal);
-    }
+    return this.withRenderLock(context, () =>
+      this.renderPageLocked(position, context),
+    );
+  }
+
+  private async renderPageLocked(
+    position: Position,
+    context: RenderContext,
+  ): Promise<PageAndPosition | null> {
     try {
       let result = await this.renderPageTracked(position, context.signal);
       const firstSpine = this.deferredFollowingSpineRelayoutStart;
@@ -3097,8 +3104,6 @@ export class OPFView implements Vgen.CustomRendererFactory {
     } catch (err) {
       this.clearFollowingSpineRelayoutState();
       throw err;
-    } finally {
-      this.renderLock.release(context.owner);
     }
   }
 
@@ -3107,19 +3112,23 @@ export class OPFView implements Vgen.CustomRendererFactory {
   // (Issue #2047).
   private renderLock = new RenderLock();
 
-  /** For legacy callers: renders a page as the current task. */
-  private renderPageResult(
-    position: Position,
-  ): Task.Result<PageAndPosition | null> {
-    const owner = defaultRenderContext().owner;
-    return fromAbortable(
-      (signal) => this.renderPage(position, { owner, signal }),
-      "renderPage",
-    );
-  }
-
-  private isRenderingPageByAnotherOwner(owner: RenderOwner): boolean {
-    return this.renderLock.isHeldByAnother(owner);
+  /**
+   * Runs `func` while `context.owner` holds the render lock. A renderer of
+   * several pages holds it for the whole run, so that no other renderer (for
+   * example, a navigation) can slip in between its pages.
+   */
+  private async withRenderLock<T>(
+    context: RenderContext,
+    func: () => Promise<T>,
+  ): Promise<T> {
+    if (!this.renderLock.tryAcquire(context.owner)) {
+      await this.renderLock.acquire(context.owner, context.signal);
+    }
+    try {
+      return await func();
+    } finally {
+      this.renderLock.release(context.owner);
+    }
   }
 
   private async renderPageTracked(
@@ -3193,13 +3202,16 @@ export class OPFView implements Vgen.CustomRendererFactory {
     };
     this.renderingAllPages = true;
     try {
-      let result = await this.renderPagesUpto(finalPosition, false, context);
-      if (this.deferredFollowingSpineRelayoutStart != null) {
-        result = await this.rerenderDeferredFollowingSpines(
+      const result = await this.withRenderLock(context, async () => {
+        const initialResult = await this.renderPagesUpto(
           finalPosition,
+          false,
           context,
         );
-      }
+        return this.deferredFollowingSpineRelayoutStart != null
+          ? this.rerenderDeferredFollowingSpines(finalPosition, context)
+          : initialResult;
+      });
       // Wait until all images are loaded (Issue #1321)
       while (
         this.spineItems.some((viewItem) =>
@@ -3217,6 +3229,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
       throw err;
     } finally {
       this.renderingAllPages = false;
+      this.notifyRenderChange();
     }
   }
 
@@ -3238,16 +3251,18 @@ export class OPFView implements Vgen.CustomRendererFactory {
     // If notAllPages is true, render pages from biginning of specified spine
     // item.
     let s = notAllPages ? spineIndex : 0;
-    let lastResult: PageAndPosition | null = null;
-    do {
-      const pos = {
-        spineIndex: s,
-        pageIndex: s === spineIndex ? pageIndex : Number.POSITIVE_INFINITY,
-        offsetInItem: s === spineIndex ? position.offsetInItem : -1,
-      };
-      lastResult = await this.renderPage(pos, context);
-    } while (++s <= spineIndex);
-    return lastResult;
+    return this.withRenderLock(context, async () => {
+      let lastResult: PageAndPosition | null = null;
+      do {
+        const pos = {
+          spineIndex: s,
+          pageIndex: s === spineIndex ? pageIndex : Number.POSITIVE_INFINITY,
+          offsetInItem: s === spineIndex ? position.offsetInItem : -1,
+        };
+        lastResult = await this.renderPage(pos, context);
+      } while (++s <= spineIndex);
+      return lastResult;
+    });
   }
 
   /**
@@ -3256,10 +3271,12 @@ export class OPFView implements Vgen.CustomRendererFactory {
   firstPage(
     position: Position,
     sync: boolean,
-  ): Task.Result<PageAndPosition | null> {
+    context: RenderContext = defaultRenderContext(),
+  ): Promise<PageAndPosition | null> {
     return this.findPage(
       { spineIndex: 0, pageIndex: 0, offsetInItem: -1 },
       sync,
+      context,
     );
   }
 
@@ -3269,7 +3286,8 @@ export class OPFView implements Vgen.CustomRendererFactory {
   lastPage(
     position: Position,
     sync: boolean,
-  ): Task.Result<PageAndPosition | null> {
+    context: RenderContext = defaultRenderContext(),
+  ): Promise<PageAndPosition | null> {
     return this.findPage(
       {
         spineIndex: this.opf.spine.length - 1,
@@ -3277,6 +3295,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
         offsetInItem: -1,
       },
       sync,
+      context,
     );
   }
 
@@ -3285,68 +3304,70 @@ export class OPFView implements Vgen.CustomRendererFactory {
    * @param sync If true, get the page synchronously (not waiting another
    *     rendering task)
    */
-  nextPage(
+  async nextPage(
     position: Position,
     sync: boolean,
-  ): Task.Result<PageAndPosition | null> {
+    context: RenderContext = defaultRenderContext(),
+  ): Promise<PageAndPosition | null> {
     let spineIndex = position.spineIndex;
     let pageIndex = position.pageIndex;
-    const frame: Task.Frame<PageAndPosition | null> = Task.newFrame("nextPage");
-    this.getPageViewItemResult(spineIndex).then((viewItem) => {
-      if (!viewItem) {
-        frame.finish(null);
-        return;
+    const viewItem = await this.getPageViewItem(spineIndex);
+    if (!viewItem) {
+      return null;
+    }
+    if (viewItem.complete && pageIndex == viewItem.pages.length - 1) {
+      if (spineIndex >= this.opf.spine.length - 1) {
+        return null;
       }
-      if (viewItem.complete && pageIndex == viewItem.pages.length - 1) {
-        if (spineIndex >= this.opf.spine.length - 1) {
-          frame.finish(null);
-          return;
-        }
-        spineIndex++;
-        pageIndex = 0;
+      spineIndex++;
+      pageIndex = 0;
 
-        // Remove next viewItem if its first page has same side as the current page
-        // to avoid unpaired page.
-        const nextViewItem = this.spineItems[spineIndex];
-        const nextPage = nextViewItem && nextViewItem.pages[0];
-        const currentPage = viewItem.pages.at(-1);
-        if (nextPage && currentPage && nextPage.side == currentPage.side) {
-          nextViewItem.pages.forEach((page) => {
-            if (page.container) page.container.remove();
-          });
-          this.spineItems[spineIndex] = null;
-          this.spineItemLoading[spineIndex] = null;
-        }
-      } else {
-        pageIndex++;
+      // Remove next viewItem if its first page has same side as the current page
+      // to avoid unpaired page.
+      const nextViewItem = this.spineItems[spineIndex];
+      const nextPage = nextViewItem && nextViewItem.pages[0];
+      const currentPage = viewItem.pages.at(-1);
+      if (nextPage && currentPage && nextPage.side == currentPage.side) {
+        nextViewItem.pages.forEach((page) => {
+          if (page.container) page.container.remove();
+        });
+        this.spineItems[spineIndex] = null;
+        this.spineItemLoading[spineIndex] = null;
       }
-      this.findPage(
-        { spineIndex, pageIndex, offsetInItem: -1 },
-        sync,
-      ).thenFinish(frame);
-    });
-    return frame.result();
+    } else {
+      pageIndex++;
+    }
+    return this.findPage(
+      { spineIndex, pageIndex, offsetInItem: -1 },
+      sync,
+      context,
+    );
   }
 
   /**
    * Move to the previous page and render it.
    */
-  previousPage(
+  async previousPage(
     position: Position,
     sync: boolean,
-  ): Task.Result<PageAndPosition | null> {
+    context: RenderContext = defaultRenderContext(),
+  ): Promise<PageAndPosition | null> {
     let spineIndex = position.spineIndex;
     let pageIndex = position.pageIndex;
     if (pageIndex == 0) {
       if (spineIndex == 0) {
-        return Task.newResult(null as PageAndPosition | null);
+        return null;
       }
       spineIndex--;
       pageIndex = Number.POSITIVE_INFINITY;
     } else {
       pageIndex--;
     }
-    return this.findPage({ spineIndex, pageIndex, offsetInItem: -1 }, sync);
+    return this.findPage(
+      { spineIndex, pageIndex, offsetInItem: -1 },
+      sync,
+      context,
+    );
   }
 
   /**
@@ -3365,36 +3386,33 @@ export class OPFView implements Vgen.CustomRendererFactory {
    * @param sync If true, get the spread synchronously (not waiting another
    *     rendering task)
    */
-  getSpread(position: Position, sync: boolean): Task.Result<Vtree.Spread> {
+  async getSpread(
+    position: Position,
+    sync: boolean,
+    context: RenderContext = defaultRenderContext(),
+  ): Promise<Vtree.Spread> {
     const page = this.getPage(position);
     if (!page) {
-      return Task.newResult({ left: null, right: null });
+      return { left: null, right: null };
     }
-    const frame: Task.Frame<Vtree.Spread> = Task.newFrame("getSpread");
     const isLeft = page.side === Constants.PageSide.LEFT;
-    let other: Task.Result<PageAndPosition | null>;
-    if (this.isRectoPage(page, position)) {
-      other = this.previousPage(position, sync);
-    } else {
-      other = this.nextPage(position, sync);
+    const otherPageAndPosition = this.isRectoPage(page, position)
+      ? await this.previousPage(position, sync, context)
+      : await this.nextPage(position, sync, context);
+    // this page may be replaced during nextPage(), so get thisPage again.
+    const thisPage = this.getPage(position);
+
+    let otherPage = otherPageAndPosition && otherPageAndPosition.page;
+    if (otherPage && otherPage.side === thisPage.side) {
+      // otherPage must not be same side
+      otherPage = null;
     }
-    other.then((otherPageAndPosition) => {
-      // this page may be replaced during nextPage(), so get thisPage again.
-      const thisPage = this.getPage(position);
 
-      let otherPage = otherPageAndPosition && otherPageAndPosition.page;
-      if (otherPage && otherPage.side === thisPage.side) {
-        // otherPage must not be same side
-        otherPage = null;
-      }
-
-      if (isLeft) {
-        frame.finish({ left: thisPage, right: otherPage });
-      } else {
-        frame.finish({ left: otherPage, right: thisPage });
-      }
-    });
-    return frame.result();
+    if (isLeft) {
+      return { left: thisPage, right: otherPage };
+    } else {
+      return { left: otherPage, right: thisPage };
+    }
   }
 
   /**
@@ -3403,119 +3421,89 @@ export class OPFView implements Vgen.CustomRendererFactory {
    *     rendering task)
    * @returns The 'verso' page of the next spread.
    */
-  nextSpread(
+  async nextSpread(
     position: Position,
     sync: boolean,
-  ): Task.Result<PageAndPosition | null> {
+    context: RenderContext = defaultRenderContext(),
+  ): Promise<PageAndPosition | null> {
     const page = this.getPage(position);
     if (!page) {
-      return Task.newResult(null as PageAndPosition | null);
+      return null;
     }
     const isRecto = this.isRectoPage(page, position);
-    const next = this.nextPage(position, sync);
+    const next = await this.nextPage(position, sync, context);
     if (isRecto) {
       return next;
-    } else {
-      return next.thenAsync((result) => {
-        if (result) {
-          if (result.page.side === page.side) {
-            // If same side, this is the next spread.
-            return next;
-          }
-          const next2 = this.nextPage(result.position, sync);
-          return next2.thenAsync((result2) => {
-            if (result2) {
-              return next2;
-            } else {
-              // If this is tha last spread, move to next page in the same spread.
-              return next;
-            }
-          });
-        } else {
-          return Task.newResult(null as PageAndPosition | null);
-        }
-      });
     }
+    if (!next) {
+      return null;
+    }
+    if (next.page.side === page.side) {
+      // If same side, this is the next spread.
+      return next;
+    }
+    const next2 = await this.nextPage(next.position, sync, context);
+    // If this is tha last spread, move to next page in the same spread.
+    return next2 ?? next;
   }
 
   /**
    * Move to the previous spread and render pages.
    * @returns The 'recto' page of the previous spread.
    */
-  previousSpread(
+  async previousSpread(
     position: Position,
     sync: boolean,
-  ): Task.Result<PageAndPosition | null> {
+    context: RenderContext = defaultRenderContext(),
+  ): Promise<PageAndPosition | null> {
     const page = this.getPage(position);
     if (!page) {
-      return Task.newResult(null as PageAndPosition | null);
+      return null;
     }
     const isRecto = this.isRectoPage(page, position);
-    const prev = this.previousPage(position, sync);
     const oldPrevPageCont = page.container.previousElementSibling;
-    if (isRecto) {
-      return prev.thenAsync((result) => {
-        if (result) {
-          if (result.page.side === page.side) {
-            // If same side, this is the previous spread.
-            return prev;
-          }
-          if (result.page.container !== oldPrevPageCont) {
-            // If previous page is changed, return it.
-            return prev;
-          }
-          return this.previousPage(result.position, sync);
-        } else {
-          return Task.newResult(null as PageAndPosition | null);
-        }
-      });
-    } else {
+    const prev = await this.previousPage(position, sync, context);
+    if (!isRecto) {
       return prev;
     }
+    if (!prev) {
+      return null;
+    }
+    if (prev.page.side === page.side) {
+      // If same side, this is the previous spread.
+      return prev;
+    }
+    if (prev.page.container !== oldPrevPageCont) {
+      // If previous page is changed, return it.
+      return prev;
+    }
+    return this.previousPage(prev.position, sync, context);
   }
 
   /**
    * Move to the epage specified by the given number (zero-based) and render it.
    */
-  navigateToEPage(
+  async navigateToEPage(
     epage: number,
     position: Position,
     sync: boolean,
-  ): Task.Result<PageAndPosition | null> {
-    const frame: Task.Frame<PageAndPosition | null> =
-      Task.newFrame("navigateToEPage");
-    fromPromise(this.opf.resolveEPage(epage), "resolveEPage").then(
-      (position) => {
-        if (position) {
-          this.findPage(position, sync).thenFinish(frame);
-        } else {
-          frame.finish(null);
-        }
-      },
-    );
-    return frame.result();
+    context: RenderContext = defaultRenderContext(),
+  ): Promise<PageAndPosition | null> {
+    const resolved = await this.opf.resolveEPage(epage);
+    return resolved ? this.findPage(resolved, sync, context) : null;
   }
 
   /**
    * Move to the page specified by the given CFI and render it.
    */
-  navigateToFragment(
+  async navigateToFragment(
     fragment: string,
     position: Position,
     sync: boolean,
-  ): Task.Result<PageAndPosition | null> {
-    const frame: Task.Frame<PageAndPosition | null> =
-      Task.newFrame("navigateToCFI");
-    fromPromise(this.opf.resolveFragment(fragment), "resolveFragment").then(
-      (position) => {
-        if (position) {
-          this.findPage(position, sync).thenFinish(frame);
-        } else {
-          frame.finish(null);
-        }
-      },
-    );
-    return frame.result();
+    context: RenderContext = defaultRenderContext(),
+  ): Promise<PageAndPosition | null> {
+    const resolved = await this.opf.resolveFragment(fragment);
+    return resolved ? this.findPage(resolved, sync, context) : null;
   }
 
   private resolveSemanticFootnoteNavigationOffset(
@@ -3553,11 +3541,12 @@ export class OPFView implements Vgen.CustomRendererFactory {
   /**
    * Move to the page specified by the given URL and render it.
    */
-  navigateTo(
+  async navigateTo(
     href: string,
     position: Position,
     sync: boolean,
-  ): Task.Result<PageAndPosition | null> {
+    context: RenderContext = defaultRenderContext(),
+  ): Promise<PageAndPosition | null> {
     Logging.logger.debug("Navigate to", href);
     let path = this.opf.getPathFromURL(Base.stripFragment(href));
     if (!path) {
@@ -3577,7 +3566,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
         href = restored[0] + (restored[1] ? `#${restored[1]}` : "");
       }
       if (path == null) {
-        return Task.newResult(null as PageAndPosition | null);
+        return null;
       }
     }
     const item = this.opf.itemMapByPath[path];
@@ -3593,41 +3582,35 @@ export class OPFView implements Vgen.CustomRendererFactory {
             href.slice(fragmentIndex + 1),
             position,
             sync,
+            context,
           );
         }
       }
-      return Task.newResult(null as PageAndPosition | null);
+      return null;
     }
-    const frame: Task.Frame<PageAndPosition | null> =
-      Task.newFrame("navigateTo");
-
-    this.waitForPreviousSpines(item.spineIndex, sync).then(() => {
-      this.getPageViewItemResult(item.spineIndex).then((viewItem) => {
-        if (!viewItem) {
-          frame.finish(null);
-          return;
-        }
-        const target = viewItem.xmldoc.getElement(href);
-        const semanticFootnoteOffset =
-          target &&
-          this.resolveSemanticFootnoteNavigationOffset(viewItem, target);
-        const targetOffset =
-          semanticFootnoteOffset != null
-            ? semanticFootnoteOffset
-            : target
-              ? viewItem.xmldoc.getElementOffset(target)
-              : 0;
-        this.findPage(
-          {
-            spineIndex: item.spineIndex,
-            pageIndex: -1,
-            offsetInItem: targetOffset,
-          },
-          sync,
-        ).thenFinish(frame);
-      });
-    });
-    return frame.result();
+    await this.waitForPreviousSpines(item.spineIndex, sync, context.signal);
+    const viewItem = await this.getPageViewItem(item.spineIndex);
+    if (!viewItem) {
+      return null;
+    }
+    const target = viewItem.xmldoc.getElement(href);
+    const semanticFootnoteOffset =
+      target && this.resolveSemanticFootnoteNavigationOffset(viewItem, target);
+    const targetOffset =
+      semanticFootnoteOffset != null
+        ? semanticFootnoteOffset
+        : target
+          ? viewItem.xmldoc.getElementOffset(target)
+          : 0;
+    return this.findPage(
+      {
+        spineIndex: item.spineIndex,
+        pageIndex: -1,
+        offsetInItem: targetOffset,
+      },
+      sync,
+      context,
+    );
   }
 
   makePage(
@@ -3834,21 +3817,6 @@ export class OPFView implements Vgen.CustomRendererFactory {
     };
   }
 
-  /**
-   * For the code that still uses Task/Result: same as `getPageViewItem`, but
-   * the Result is available at once if the view item is already loaded.
-   */
-  getPageViewItemResult(spineIndex: number): Task.Result<OPFViewItem | null> {
-    if (spineIndex === -1 || spineIndex >= this.opf.spine.length) {
-      return Task.newResult<OPFViewItem | null>(null);
-    }
-    const viewItem = this.spineItems[spineIndex];
-    if (viewItem) {
-      return Task.newResult(viewItem);
-    }
-    return fromPromise(this.getPageViewItem(spineIndex), "getPageViewItem");
-  }
-
   async getPageViewItem(spineIndex: number): Promise<OPFViewItem | null> {
     if (spineIndex === -1 || spineIndex >= this.opf.spine.length) {
       return null;
@@ -4038,20 +4006,19 @@ export class OPFView implements Vgen.CustomRendererFactory {
     return this.spineItems.some((item) => item && item.pages.length > 0);
   }
 
-  showTOC(autohide: boolean): Task.Result<Vtree.Page | null> {
+  async showTOC(autohide: boolean): Promise<Vtree.Page | null> {
     const opf = this.opf;
     const toc = opf.toc;
     this.tocAutohide = autohide;
     if (!toc) {
-      return Task.newResult<Vtree.Page | null>(null);
+      return null;
     }
     this.tocVisible = true;
     if (this.tocView && this.tocView.page) {
       this.tocView.page.container.style.visibility = "visible";
       this.tocView.page.container.setAttribute("aria-hidden", "false");
-      return Task.newResult(this.tocView.page);
+      return this.tocView.page;
     }
-    const frame: Task.Frame<Vtree.Page> = Task.newFrame("showTOC");
     if (!this.tocView) {
       this.tocView = new Toc.TOCView(
         opf.store,
@@ -4089,14 +4056,16 @@ export class OPFView implements Vgen.CustomRendererFactory {
     pageCont.setAttribute("data-vivliostyle-toc-box", "true");
     pageCont.setAttribute("role", "navigation");
 
-    this.tocView
-      .showTOC(pageCont, viewport, tocWidth, tocHeight, this.viewport.fontSize)
-      .then((page) => {
-        pageCont.style.visibility = "visible";
-        pageCont.setAttribute("aria-hidden", "false");
-        frame.finish(page);
-      });
-    return frame.result();
+    const page = await this.tocView.showTOC(
+      pageCont,
+      viewport,
+      tocWidth,
+      tocHeight,
+      this.viewport.fontSize,
+    );
+    pageCont.style.visibility = "visible";
+    pageCont.setAttribute("aria-hidden", "false");
+    return page;
   }
 
   hideTOC(): void {
@@ -4124,11 +4093,11 @@ export interface RenderContext {
 }
 
 /**
- * The owner for callers that do not give one: the current legacy task (so that
- * code running in one task counts as one owner, as before) or else a new one.
+ * The context for callers that do not give one: a new owner, so that the
+ * rendering of the caller (and what it calls) counts as one owner.
  */
 export function defaultRenderContext(): RenderContext {
-  return { owner: Task.currentTask() ?? {} };
+  return { owner: {} };
 }
 
 /**
@@ -4139,6 +4108,7 @@ export class RenderLock {
   private holder: RenderOwner | null = null;
   private depth = 0;
   private waiters: { owner: RenderOwner; grant: () => void }[] = [];
+  private changeListeners: (() => void)[] = [];
 
   isHeldByAnother(owner: RenderOwner): boolean {
     return this.holder !== null && this.holder !== owner;
@@ -4196,6 +4166,45 @@ export class RenderLock {
       this.holder = next.owner;
       this.depth = 1;
       next.grant();
+    }
+    this.notify();
+  }
+
+  /**
+   * Waits until `notify()` is called (the lock is released, or something that
+   * a waiter depends on has changed), at most `timeout` milliseconds.
+   */
+  changed(timeout: number, signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      const stop = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        const index = this.changeListeners.indexOf(wake);
+        if (index >= 0) {
+          this.changeListeners.splice(index, 1);
+        }
+      };
+      const wake = () => {
+        stop();
+        resolve();
+      };
+      const onAbort = () => {
+        stop();
+        reject(signal!.reason);
+      };
+      const timer = setTimeout(wake, timeout);
+      this.changeListeners.push(wake);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  notify(): void {
+    for (const wake of this.changeListeners.slice()) {
+      wake();
     }
   }
 }

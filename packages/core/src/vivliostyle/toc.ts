@@ -26,7 +26,7 @@ import * as Exprs from "./exprs";
 import * as Font from "./font";
 import * as OPS from "./ops";
 import * as Task from "./task";
-import { fromPromise } from "./task-bridge";
+import { fromPromise, runLegacy } from "./task-bridge";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
 import * as XmlDoc from "./xml-doc";
@@ -252,17 +252,16 @@ export class TOCView implements Vgen.CustomRendererFactory {
     };
   }
 
-  showTOC(
+  async showTOC(
     elem: HTMLElement,
     viewport: Vgen.Viewport,
     width: number,
     height: number,
     fontSize: number,
-  ): Task.Result<Vtree.Page> {
+  ): Promise<Vtree.Page> {
     if (this.page) {
-      return Task.newResult(this.page as Vtree.Page);
+      return this.page as Vtree.Page;
     }
-    const frame: Task.Frame<Vtree.Page> = Task.newFrame("showTOC");
     const page = new Vtree.Page(elem, elem);
     this.page = page;
 
@@ -270,50 +269,46 @@ export class TOCView implements Vgen.CustomRendererFactory {
     // but they need different styles. So, add "?viv-toc-box" to distinguish with TOC page URL.
     const tocBoxUrl = Base.toTocBoxURL(this.url);
 
-    this.store.loadResult(tocBoxUrl).then((xmldoc) => {
-      for (const tocElem of findTocElements(xmldoc.document)) {
-        // Set `data-vivliostyle-role="doc-toc"`
-        tocElem.setAttribute("data-vivliostyle-role", "doc-toc");
-      }
+    const xmldoc = await this.store.load(tocBoxUrl);
+    for (const tocElem of findTocElements(xmldoc.document)) {
+      // Set `data-vivliostyle-role="doc-toc"`
+      tocElem.setAttribute("data-vivliostyle-role", "doc-toc");
+    }
 
-      const style = this.store.getStyleForDoc(xmldoc);
-      const viewportSize = style.sizeViewport(width, 100000, fontSize);
-      viewport = new Vgen.Viewport(
-        viewport.window,
-        viewportSize.fontSize,
-        0,
-        elem,
-        viewportSize.width,
-        viewportSize.height,
-      );
-      const customRenderer = this.makeCustomRenderer(xmldoc);
-      fromPromise(
-        OPS.StyleInstance.create(
-          style,
-          xmldoc,
-          this.lang,
-          viewport,
-          this.clientLayout,
-          this.fontMapper,
-          customRenderer,
-          this.fallbackMap,
-          0,
-          this.documentURLTransformer,
-          this.counterStore,
-          this.cmykStore,
-          this.pref,
-          null,
-          null,
-        ),
-        "StyleInstance.create",
-      ).then((instance) => {
-        instance.layoutNextPage(page, null).then(() => {
-          this.setAutoHeight(elem, 2);
-          frame.finish(page);
-        });
-      });
-    });
-    return frame.result();
+    const style = this.store.getStyleForDoc(xmldoc);
+    const viewportSize = style.sizeViewport(width, 100000, fontSize);
+    viewport = new Vgen.Viewport(
+      viewport.window,
+      viewportSize.fontSize,
+      0,
+      elem,
+      viewportSize.width,
+      viewportSize.height,
+    );
+    const customRenderer = this.makeCustomRenderer(xmldoc);
+    const instance = await OPS.StyleInstance.create(
+      style,
+      xmldoc,
+      this.lang,
+      viewport,
+      this.clientLayout,
+      this.fontMapper,
+      customRenderer,
+      this.fallbackMap,
+      0,
+      this.documentURLTransformer,
+      this.counterStore,
+      this.cmykStore,
+      this.pref,
+      null,
+      null,
+    );
+    await runLegacy(
+      () => instance.layoutNextPage(page, null),
+      "layoutNextPage",
+    );
+    this.setAutoHeight(elem, 2);
+    return page;
   }
 
   hideTOC(): void {

@@ -30,8 +30,6 @@ import * as OPS from "./ops";
 import * as Plugin from "./plugin";
 import * as Profile from "./profile";
 import * as Scripts from "./scripts";
-import type * as Task from "./task";
-import { runLegacy } from "./task-bridge";
 import * as TaskUtil from "./task-util";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
@@ -860,10 +858,7 @@ export class AdaptiveViewer {
     }
 
     if (spreadView) {
-      const spread = await runLegacy(
-        () => this.opfView.getSpread(this.pagePosition, !!sync),
-        "getSpread",
-      );
+      const spread = await this.opfView.getSpread(this.pagePosition, !!sync);
       if (!spread.left && !spread.right) {
         return null;
       }
@@ -1149,7 +1144,7 @@ export class AdaptiveViewer {
   }
 
   async moveTo(command: Base.JSON): Promise<boolean> {
-    let method: () => Task.Result<Epub.PageAndPosition>;
+    let method: () => Promise<Epub.PageAndPosition>;
     if (
       this.readyState !== Constants.ReadyState.COMPLETE &&
       command["where"] !== "next"
@@ -1160,7 +1155,7 @@ export class AdaptiveViewer {
       let m: (
         position: Epub.Position,
         sync: boolean,
-      ) => Task.Result<Epub.PageAndPosition>;
+      ) => Promise<Epub.PageAndPosition>;
       switch (command["where"]) {
         case "next":
           m = this.pref.spreadView
@@ -1204,10 +1199,7 @@ export class AdaptiveViewer {
     if (!this.opfView) {
       return true;
     }
-    const result = await runLegacy<Epub.PageAndPosition>(
-      () => method.call(this.opfView),
-      "moveTo",
-    );
+    const result = await method.call(this.opfView);
     let res = true;
     if (result) {
       this.pagePosition = result.position;
@@ -1239,10 +1231,7 @@ export class AdaptiveViewer {
       this.opfView.hideTOC();
       return true;
     }
-    const page = await runLegacy(
-      () => this.opfView.showTOC(autohide),
-      "showTOC",
-    );
+    const page = await this.opfView.showTOC(autohide);
     if (page) {
       if (changeAutohide) {
         page.listeners = {};

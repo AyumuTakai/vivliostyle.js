@@ -701,43 +701,30 @@ describe("epub", function () {
         "cannot load the spine item",
       );
     });
-
-    describe("getPageViewItemResult", function () {
-      it("is available at once for a loaded view item and for a spine index that does not exist", function () {
-        var view = createView(2);
-        var viewItem = { pages: [] };
-        view.spineItems[0] = viewItem;
-        var seen = [];
-        view.getPageViewItemResult(0).then(function (v) {
-          seen.push(v);
-        });
-        view.getPageViewItemResult(5).then(function (v) {
-          seen.push(v);
-        });
-        expect(seen).toEqual([viewItem, null]);
-      });
-
-      it("waits for a spine item that is not loaded yet", async function () {
-        var view = createView(2);
-        var loaded = [];
-        fakeLoader(view, loaded);
-        var viewItem = await new Promise(function (resolve) {
-          adapt_task.startNow(function () {
-            var frame = adapt_task.newFrame("caller");
-            view.getPageViewItemResult(1).then(function (v) {
-              resolve(v);
-              frame.finish(true);
-            });
-            return frame.result();
-          });
-        });
-        expect(loaded).toEqual([1]);
-        expect(viewItem).toBe(view.spineItems[1]);
-      });
-    });
   });
 
   describe("OPFView page rendering", function () {
+    it("wakes up a waiting navigation when the lock is released", async function () {
+      var lock = new adapt_epub.RenderLock();
+      var holder = {};
+      lock.tryAcquire(holder);
+      var start = performance.now();
+      setTimeout(function () {
+        lock.release(holder);
+      }, 20);
+      await lock.changed(2000);
+      expect(performance.now() - start).toBeLessThan(1000);
+    });
+
+    it("stops waiting for a change when the signal is aborted", async function () {
+      var lock = new adapt_epub.RenderLock();
+      var abort = new AbortController();
+      var reason = new Error("canceled");
+      var pending = lock.changed(2000, abort.signal);
+      abort.abort(reason);
+      await expectAsync(pending).toBeRejectedWith(reason);
+    });
+
     it("releases the render lock after an error", async function () {
       var view = Object.create(adapt_epub.OPFView.prototype);
       view.renderLock = new adapt_epub.RenderLock();
@@ -801,42 +788,30 @@ describe("epub", function () {
       expect(view.renderLock.tryAcquire({})).toBe(true);
     });
 
-    it("waits for a pending page being rendered by another task", function (done) {
-      adapt_task.start(function () {
-        var view = Object.create(adapt_epub.OPFView.prototype);
-        view.renderLock = new adapt_epub.RenderLock();
-        var page = {};
-        var viewItem = {
-          complete: false,
-          layoutPositions: [{ page: 0 }, { page: 1 }],
-          pages: [{}],
-        };
-        spyOn(view, "waitForPreviousSpines").and.returnValue(
-          adapt_task.newResult(true),
-        );
-        spyOn(view, "getPageViewItemResult").and.returnValue(
-          adapt_task.newResult(viewItem),
-        );
-        spyOn(view, "renderPage").and.callThrough();
-        var background = {};
-        view.renderLock.tryAcquire(background);
-        setTimeout(function () {
-          viewItem.pages[1] = page;
-          view.renderLock.release(background);
-        }, 50);
-        var testFrame = adapt_task.newFrame("testPendingPageWait");
-        testFrame.sleep(10).then(function () {
-          view
-            .findPage({ spineIndex: 0, pageIndex: 1, offsetInItem: -1 }, false)
-            .then(function (result) {
-              expect(result.page).toBe(page);
-              expect(view.renderPage).not.toHaveBeenCalled();
-              testFrame.finish(true);
-              done();
-            });
-        });
-        return testFrame.result();
-      });
+    it("waits for a pending page being rendered by another task", async function () {
+      var view = Object.create(adapt_epub.OPFView.prototype);
+      view.renderLock = new adapt_epub.RenderLock();
+      var page = {};
+      var viewItem = {
+        complete: false,
+        layoutPositions: [{ page: 0 }, { page: 1 }],
+        pages: [{}],
+      };
+      spyOn(view, "getPageViewItem").and.returnValue(Promise.resolve(viewItem));
+      spyOn(view, "renderPage").and.callThrough();
+      var background = {};
+      view.renderLock.tryAcquire(background);
+      setTimeout(function () {
+        viewItem.pages[1] = page;
+        view.renderLock.release(background);
+      }, 50);
+
+      var result = await view.findPage(
+        { spineIndex: 0, pageIndex: 1, offsetInItem: -1 },
+        false,
+      );
+      expect(result.page).toBe(page);
+      expect(view.renderPage).not.toHaveBeenCalled();
     });
 
     it("processes a pending suffix rebuild before returning a cached page", function (done) {
@@ -848,10 +823,10 @@ describe("epub", function () {
         view.deferredFollowingSpineRelayoutStart = 1;
         view.renderLock = new adapt_epub.RenderLock();
         spyOn(view, "waitForPreviousSpines").and.returnValue(
-          adapt_task.newResult(true),
+          Promise.resolve(true),
         );
-        spyOn(view, "getPageViewItemResult").and.returnValue(
-          adapt_task.newResult({ pages: [cachedPage], complete: true }),
+        spyOn(view, "getPageViewItem").and.returnValue(
+          Promise.resolve({ pages: [cachedPage], complete: true }),
         );
         spyOn(view, "renderPage").and.returnValue(
           Promise.resolve({
@@ -872,56 +847,46 @@ describe("epub", function () {
       });
     });
 
-    it("waits for background pagination to rebuild a cached suffix page", function (done) {
-      adapt_task.start(function () {
-        var view = Object.create(adapt_epub.OPFView.prototype);
-        var position = { spineIndex: 1, pageIndex: 0, offsetInItem: -1 };
-        var stalePage = {};
-        var rebuiltPage = {};
-        var viewItem = { pages: [stalePage], complete: true };
-        view.deferredFollowingSpineRelayoutStart = 1;
-        view.renderingAllPages = true;
-        view.renderLock = new adapt_epub.RenderLock();
-        spyOn(view, "waitForPreviousSpines").and.returnValue(
-          adapt_task.newResult(true),
-        );
-        spyOn(view, "getPageViewItemResult").and.callFake(function () {
-          return adapt_task.newResult(viewItem);
-        });
-        spyOn(view, "renderPage").and.returnValue(
-          Promise.resolve({ page: stalePage, position: position }),
-        );
-        var scheduler = adapt_task.currentTask().getScheduler();
-        var backgroundTask = scheduler.run(function () {
-          var backgroundFrame = adapt_task.newFrame("finishSuffixRebuild");
-          backgroundFrame.sleep(50).then(function () {
-            viewItem.pages[0] = rebuiltPage;
-            view.deferredFollowingSpineRelayoutStart = null;
-            view.renderingAllPages = false;
-            backgroundFrame.finish(true);
-          });
-          return backgroundFrame.result();
-        });
-
-        view.findPage(position, false).then(function (result) {
-          expect(result.page).toBe(rebuiltPage);
-          expect(view.renderPage).not.toHaveBeenCalled();
-          backgroundTask.join().then(function () {
-            done();
-          });
-        });
-        return adapt_task.newResult(true);
+    it("waits for background pagination to rebuild a cached suffix page", async function () {
+      var view = Object.create(adapt_epub.OPFView.prototype);
+      view.renderLock = new adapt_epub.RenderLock();
+      spyOn(view, "waitForPreviousSpines").and.returnValue(
+        Promise.resolve(true),
+      );
+      var position = { spineIndex: 1, pageIndex: 0, offsetInItem: -1 };
+      var stalePage = {};
+      var rebuiltPage = {};
+      var viewItem = { pages: [stalePage], complete: true };
+      view.deferredFollowingSpineRelayoutStart = 1;
+      view.renderingAllPages = true;
+      spyOn(view, "getPageViewItem").and.callFake(function () {
+        return Promise.resolve(viewItem);
       });
+      spyOn(view, "renderPage").and.returnValue(
+        Promise.resolve({ page: stalePage, position: position }),
+      );
+      // The rebuild finishes without anyone announcing it: the waiting
+      // navigation notices by itself.
+      setTimeout(function () {
+        viewItem.pages[0] = rebuiltPage;
+        view.deferredFollowingSpineRelayoutStart = null;
+        view.renderingAllPages = false;
+      }, 50);
+
+      var result = await view.findPage(position, false);
+      expect(result.page).toBe(rebuiltPage);
+      expect(view.renderPage).not.toHaveBeenCalled();
     });
 
     it("does not return an invalid cached suffix page synchronously", function (done) {
       adapt_task.start(function () {
         var view = Object.create(adapt_epub.OPFView.prototype);
+        view.renderLock = new adapt_epub.RenderLock();
         var position = { spineIndex: 1, pageIndex: 0, offsetInItem: -1 };
         view.deferredFollowingSpineRelayoutStart = 1;
         view.renderingAllPages = true;
         spyOn(view, "waitForPreviousSpines").and.returnValue(
-          adapt_task.newResult(true),
+          Promise.resolve(true),
         );
         spyOn(view, "renderPage");
 
@@ -934,44 +899,29 @@ describe("epub", function () {
       });
     });
 
-    it("waits for another navigation task to rebuild an invalid suffix", function (done) {
-      adapt_task.start(function () {
-        var view = Object.create(adapt_epub.OPFView.prototype);
-        var position = { spineIndex: 1, pageIndex: 0, offsetInItem: -1 };
-        var rebuiltPage = {};
-        var viewItem = { pages: [rebuiltPage], complete: true };
-        view.deferredFollowingSpineRelayoutStart = 1;
-        view.renderingAllPages = false;
-        view.renderLock = new adapt_epub.RenderLock();
-        var otherOwner = {};
-        view.renderLock.tryAcquire(otherOwner);
-        spyOn(view, "waitForPreviousSpines").and.returnValue(
-          adapt_task.newResult(true),
-        );
-        spyOn(view, "getPageViewItemResult").and.returnValue(
-          adapt_task.newResult(viewItem),
-        );
-        spyOn(view, "renderPage");
-        var scheduler = adapt_task.currentTask().getScheduler();
-        var rebuildTask = scheduler.run(function () {
-          var rebuildFrame = adapt_task.newFrame("finishNavigationRebuild");
-          rebuildFrame.sleep(50).then(function () {
-            view.renderLock.release(otherOwner);
-            view.deferredFollowingSpineRelayoutStart = null;
-            rebuildFrame.finish(true);
-          });
-          return rebuildFrame.result();
-        });
+    it("waits for another navigation task to rebuild an invalid suffix", async function () {
+      var view = Object.create(adapt_epub.OPFView.prototype);
+      var position = { spineIndex: 1, pageIndex: 0, offsetInItem: -1 };
+      var rebuiltPage = {};
+      var viewItem = { pages: [rebuiltPage], complete: true };
+      view.deferredFollowingSpineRelayoutStart = 1;
+      view.renderingAllPages = false;
+      view.renderLock = new adapt_epub.RenderLock();
+      spyOn(view, "waitForPreviousSpines").and.returnValue(
+        Promise.resolve(true),
+      );
+      var otherOwner = {};
+      view.renderLock.tryAcquire(otherOwner);
+      spyOn(view, "getPageViewItem").and.returnValue(Promise.resolve(viewItem));
+      spyOn(view, "renderPage");
+      setTimeout(function () {
+        view.deferredFollowingSpineRelayoutStart = null;
+        view.renderLock.release(otherOwner);
+      }, 50);
 
-        view.findPage(position, false).then(function (result) {
-          expect(result.page).toBe(rebuiltPage);
-          expect(view.renderPage).not.toHaveBeenCalled();
-          rebuildTask.join().then(function () {
-            done();
-          });
-        });
-        return adapt_task.newResult(true);
-      });
+      var result = await view.findPage(position, false);
+      expect(result.page).toBe(rebuiltPage);
+      expect(view.renderPage).not.toHaveBeenCalled();
     });
 
     it("does not start a synchronous invalid-suffix rebuild in parallel", function (done) {
@@ -983,7 +933,7 @@ describe("epub", function () {
         view.renderLock = new adapt_epub.RenderLock();
         view.renderLock.tryAcquire({});
         spyOn(view, "waitForPreviousSpines").and.returnValue(
-          adapt_task.newResult(true),
+          Promise.resolve(true),
         );
         spyOn(view, "renderPage");
 
@@ -996,51 +946,41 @@ describe("epub", function () {
       });
     });
 
-    it("waits until an in-progress suffix rebuild has completed", function (done) {
-      adapt_task.start(function () {
-        var view = Object.create(adapt_epub.OPFView.prototype);
-        var position = { spineIndex: 1, pageIndex: 0, offsetInItem: -1 };
-        var rebuiltPage = {};
-        view.relayoutingFollowingSpineStart = 1;
-        spyOn(view, "waitForPreviousSpines").and.returnValue(
-          adapt_task.newResult(true),
-        );
-        spyOn(view, "getPageViewItemResult").and.returnValue(
-          adapt_task.newResult({ pages: [rebuiltPage], complete: true }),
-        );
-        var scheduler = adapt_task.currentTask().getScheduler();
-        var rebuildTask = scheduler.run(function () {
-          var rebuildFrame = adapt_task.newFrame("finishSuffixRelayout");
-          rebuildFrame.sleep(50).then(function () {
-            view.relayoutingFollowingSpineStart = null;
-            rebuildFrame.finish(true);
-          });
-          return rebuildFrame.result();
-        });
+    it("waits until an in-progress suffix rebuild has completed", async function () {
+      var view = Object.create(adapt_epub.OPFView.prototype);
+      view.renderLock = new adapt_epub.RenderLock();
+      spyOn(view, "waitForPreviousSpines").and.returnValue(
+        Promise.resolve(true),
+      );
+      var position = { spineIndex: 1, pageIndex: 0, offsetInItem: -1 };
+      var rebuiltPage = {};
+      view.relayoutingFollowingSpineStart = 1;
+      spyOn(view, "getPageViewItem").and.returnValue(
+        Promise.resolve({ pages: [rebuiltPage], complete: true }),
+      );
+      setTimeout(function () {
+        view.relayoutingFollowingSpineStart = null;
+        view.notifyRenderChange();
+      }, 50);
 
-        view.findPage(position, false).then(function (result) {
-          expect(result.page).toBe(rebuiltPage);
-          rebuildTask.join().then(function () {
-            done();
-          });
-        });
-        return adapt_task.newResult(true);
-      });
+      var result = await view.findPage(position, false);
+      expect(result.page).toBe(rebuiltPage);
     });
 
     it("does not expose an in-progress suffix rebuild synchronously", function (done) {
       adapt_task.start(function () {
         var view = Object.create(adapt_epub.OPFView.prototype);
+        view.renderLock = new adapt_epub.RenderLock();
         var position = { spineIndex: 1, pageIndex: 0, offsetInItem: -1 };
         view.relayoutingFollowingSpineStart = 1;
         spyOn(view, "waitForPreviousSpines").and.returnValue(
-          adapt_task.newResult(true),
+          Promise.resolve(true),
         );
-        spyOn(view, "getPageViewItemResult");
+        spyOn(view, "getPageViewItem");
 
         view.findPage(position, true).then(function (result) {
           expect(result).toBeNull();
-          expect(view.getPageViewItemResult).not.toHaveBeenCalled();
+          expect(view.getPageViewItem).not.toHaveBeenCalled();
           done();
         });
         return adapt_task.newResult(true);
@@ -1579,6 +1519,7 @@ describe("epub", function () {
     it("rerenders changed retained references before rebuilding the suffix", function (done) {
       adapt_task.start(function () {
         var view = Object.create(adapt_epub.OPFView.prototype);
+        view.renderLock = new adapt_epub.RenderLock();
         var position = {
           spineIndex: 2,
           pageIndex: Number.POSITIVE_INFINITY,
@@ -1643,6 +1584,7 @@ describe("epub", function () {
     it("rerenders a deferred suffix once after full pagination", function (done) {
       adapt_task.start(function () {
         var view = Object.create(adapt_epub.OPFView.prototype);
+        view.renderLock = new adapt_epub.RenderLock();
         var finalPosition = {
           spineIndex: 2,
           pageIndex: Number.POSITIVE_INFINITY,
@@ -2151,13 +2093,13 @@ describe("epub", function () {
         view.isInCounterResolveScope = function () {
           return false;
         };
-        spyOn(view, "getPageViewItemResult");
+        spyOn(view, "getPageViewItem");
 
         view
           .resolveUnresolvedReferencesForPage(viewItem, page, 0, { page: 1 })
           .then(function (result) {
             expect(result).toBe(page);
-            expect(view.getPageViewItemResult).not.toHaveBeenCalled();
+            expect(view.getPageViewItem).not.toHaveBeenCalled();
             container.remove();
             done();
           });
