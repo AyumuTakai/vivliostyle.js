@@ -1,3 +1,17 @@
+> [!NOTE]
+> **このリポジトリは、公式の [Vivliostyle.js](https://github.com/vivliostyle/vivliostyle.js) の個人用フォークです。**
+> This is a personal fork of the official [Vivliostyle.js](https://github.com/vivliostyle/vivliostyle.js). For the official releases and documentation, see the official repository and [vivliostyle.org](https://vivliostyle.org).
+>
+> 公式との主な違い:
+>
+> - 組版エンジン(`packages/core`)の非同期処理を、独自のタスクスケジューラ(`task.ts`)から標準の `async`/`await` に置き換えました。描画の排他制御(`RenderLock`)と、`AbortSignal` による中断を備えています。
+> - 組版の性能を改善しました(強制的なスタイル再計算の削減など)。Vivliostyle CLI からの直列ビルドで約 6% 短くなりました(計測に使った 169 ページの本)。
+> - ページのコンテナに、ページの種類(`page` プロパティ)を表す `data-vivliostyle-page-type` 属性を付けます。
+> - 出力が公式と変わらないことを、テスト(Karma)と、公式との組版結果の比較で確認しています。
+>
+> 公式へのプルリクエストは予定していません。生成 AI の利用については [AI_POLICY.md](AI_POLICY.md) に従い、コミットに `Assisted-by` を記載しています。
+> 並列ビルドなどを加えた CLI のフォークは [AyumuTakai/vivliostyle-cli](https://github.com/AyumuTakai/vivliostyle-cli) です。
+
 <img src="https://vivliostyle.org/assets/vivliostyle-logo.svg" width="300" alt="Vivliostyle" /><br/>
 
 [![GitHub tag][github-tag]][github-tag-url]
