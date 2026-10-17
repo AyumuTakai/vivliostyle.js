@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Documents in iframes printed at their size</title>
+  </head>
+  <body>
+    <p>
+      When printed, the SVG image and the text in the iframes must be as large
+      as on the screen, not smaller by the output pixel ratio.
+    </p>
+    <iframe src="embedded-svg-image.svg" width="220" height="120"></iframe>
+    <iframe
+      srcdoc="<p style='font-size: 20px; margin: 0'>HTML in an iframe</p>"
+      width="300"
+      height="60"></iframe>
+  </body>
+</html>

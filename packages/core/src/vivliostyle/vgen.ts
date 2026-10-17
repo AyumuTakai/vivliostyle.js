@@ -4812,6 +4812,50 @@ export class DefaultClientLayout implements Vtree.ClientLayout {
   }
 }
 
+/** The viewport roots whose iframes are zoomed while printing */
+const rootsWithFramePrintZoom = new WeakSet<HTMLElement>();
+
+/**
+ * The page containers are zoomed by the output pixel ratio while printing
+ * (see VivliostyleViewportCss in assets.ts), but Chromium does not apply that
+ * zoom to the documents in iframes when it prints, so their content was
+ * printed smaller by the ratio. The same zoom is set on the root of those
+ * documents (of the same origin) while printing.
+ */
+function zoomFramesWhilePrinting(window: Window, root: HTMLElement): void {
+  if (Base.browserType !== "chromium" || rootsWithFramePrintZoom.has(root)) {
+    return;
+  }
+  rootsWithFramePrintZoom.add(root);
+  const zoomed = new Map<HTMLElement, string>();
+  window.addEventListener("beforeprint", () => {
+    const ratio = parseFloat(
+      window.getComputedStyle(root).getPropertyValue("--viv-outputPixelRatio"),
+    );
+    if (!(ratio > 1)) {
+      return;
+    }
+    for (const frame of root.querySelectorAll("iframe")) {
+      let frameRoot: HTMLElement | null = null;
+      try {
+        frameRoot = frame.contentDocument?.documentElement as HTMLElement;
+      } catch {
+        // A document of another origin cannot be changed
+      }
+      if (frameRoot?.style && !zoomed.has(frameRoot)) {
+        zoomed.set(frameRoot, frameRoot.style.zoom);
+        frameRoot.style.zoom = `${ratio}`;
+      }
+    }
+  });
+  window.addEventListener("afterprint", () => {
+    for (const [frameRoot, zoom] of zoomed) {
+      frameRoot.style.zoom = zoom;
+    }
+    zoomed.clear();
+  });
+}
+
 export class Viewport {
   document: Document;
   root: HTMLElement;
@@ -4878,6 +4922,7 @@ export class Viewport {
       );
 
       this.scaleRatio = pixelRatio / window.devicePixelRatio;
+      zoomFramesWhilePrinting(window, this.root);
     }
 
     // Determine layout unit per CSS pixel and adjustment value needed for

@@ -240,6 +240,10 @@ module.exports = [
         file: "embedded-svg-later-pages.html",
         title: "SVG in object and embed elements after the first page",
       },
+      {
+        file: "iframe-print-zoom.html",
+        title: "Documents in iframes printed at their size",
+      },
       { file: "font_property.html", title: "Font property" },
       {
         file: "relative-font-keywords-root.html",

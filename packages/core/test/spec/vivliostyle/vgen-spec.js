@@ -681,4 +681,29 @@ describe("vgen", function () {
       expect(style["line-height"].value.toString()).toBe("1");
     });
   });
+
+  describe("Viewport", function () {
+    it("zooms the documents in iframes by the output pixel ratio while printing", async function () {
+      var root = document.createElement("div");
+      document.body.appendChild(root);
+      try {
+        new Vgen.Viewport(window, 16, 8, root, 400, 300);
+        var frame = document.createElement("iframe");
+        frame.srcdoc = "<p>In the frame</p>";
+        var loaded = new Promise(function (resolve) {
+          frame.addEventListener("load", resolve);
+        });
+        root.appendChild(frame);
+        await loaded;
+        var frameRoot = frame.contentDocument.documentElement;
+
+        window.dispatchEvent(new Event("beforeprint"));
+        expect(frameRoot.style.zoom).toBe("8");
+        window.dispatchEvent(new Event("afterprint"));
+        expect(frameRoot.style.zoom).toBe("");
+      } finally {
+        root.remove();
+      }
+    });
+  });
 });
