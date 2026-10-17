@@ -86,11 +86,11 @@ class VivliostylePrint {
     document.body.appendChild(this.iframe);
   }
 
-  runInIframe(iframeWin: Window) {
+  async runInIframe(iframeWin: Window) {
     this.iframeWin = iframeWin;
-    return this.preparePrint()
-      .then(() => this.browserPrint())
-      .then(() => this.cleanUp());
+    await this.preparePrint();
+    this.browserPrint();
+    this.cleanUp();
   }
 
   preparePrint() {

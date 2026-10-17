@@ -58,6 +58,11 @@ export function asRenderedActiveState(
     : null;
 }
 
+/**
+ * The handlers of the nodes return nothing when they are done at once, or a Promise when they have to wait
+ * (e.g. to lay out a float). They are not async functions: they are called for every node, and most of them are
+ * done at once, so that the iterator waits only for the Promises (see `LayoutIterator.step`).
+ */
 export class LayoutIteratorStrategy {
   initialState(initialNodeContext: Vtree.NodeContext): LayoutIteratorState {
     return {
