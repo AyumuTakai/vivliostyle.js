@@ -40,6 +40,7 @@ import * as CssValidator from "./css-validator";
 import * as Display from "./display";
 import * as Exprs from "./exprs";
 import * as Font from "./font";
+import { FontMetrics } from "./font-metrics";
 import * as GeometryUtil from "./geometry-util";
 import * as Layout from "./layout";
 import * as LayoutProcessor from "./layout-processor";
@@ -382,6 +383,7 @@ export class StyleInstance
       viewport.fontSize * pref.lineHeight,
     );
     this.lang = xmldoc.lang || defaultLang;
+    this.fontLanguage = this.lang;
     this.faces = new Font.DocumentFaces(this.style.fontDeobfuscator);
     this.rootPageFloatLayoutContext =
       PageFloats.RootPageFloatLayoutContext.createRoot();
@@ -407,6 +409,23 @@ export class StyleInstance
     this.pubTitle = pubTitle;
     this.docTitle = docTitle;
 
+    this.fontMetrics = new FontMetrics(
+      viewport.document,
+      (family) =>
+        this.faces
+          .filterFontFamily(
+            CssParser.parseValue(
+              style.rootScope,
+              new CssTokenizer.Tokenizer(family, null),
+              "",
+            ),
+          )
+          .toString(),
+      viewport.scaleRatio,
+    );
+  }
+
+  private initializeLayout(): void {
     const counterListener = this.counterStore.createCounterListener(
       this.xmldoc.url,
     );
@@ -549,11 +568,32 @@ export class StyleInstance
       pageProgression,
       isVersoFirstPage,
     );
-    await instance.loadFontsAndScripts();
+    // Root font metrics determine rem/rex/rcap/rch/ric and page geometry.
+    // Embedded faces must be usable before the styler computes those values.
+    await instance.loadFonts();
+    instance.initializeLayout();
+    const scriptsLoaded = await Scripts.loadScriptsInHead(
+      instance.xmldoc.document,
+      instance.viewport.window,
+      instance.styler,
+    );
+    if (scriptsLoaded) {
+      // Head scripts may load a font used by root metrics and page
+      // geometry. Refresh only scripted documents after their loaders end.
+      instance.fontMetrics.clearCache();
+      instance.rootFontSize = null;
+      instance.rootFontMetricsReady = false;
+      instance.isRelativeRootFontSize = null;
+      instance.rootLineHeight =
+        instance.initialFontSize * instance.pref.lineHeight;
+      instance.isRootLineHeightFromRelativeCalc = false;
+      instance.pageSheetSize = {};
+      instance.initializeLayout();
+    }
     return instance;
   }
 
-  private async loadFontsAndScripts(): Promise<boolean> {
+  private loadFonts(): Promise<boolean> {
     const srcFaces = [] as Font.Face[];
     for (const fontFace of this.style.fontFaces) {
       if (fontFace.condition && !fontFace.condition.evaluate(this)) {
@@ -563,13 +603,7 @@ export class StyleInstance
       const srcFace = new Font.Face(properties);
       srcFaces.push(srcFace);
     }
-    await this.fontMapper.findOrLoadFonts(srcFaces, this.faces);
-    // JavaScript in HTML documents support
-    return Scripts.loadScriptsInHead(
-      this.xmldoc.document,
-      this.viewport.window,
-      this.styler,
-    );
+    return this.fontMapper.findOrLoadFonts(srcFaces, this.faces);
   }
 
   private matchStartPageSide(side: string | null): boolean {

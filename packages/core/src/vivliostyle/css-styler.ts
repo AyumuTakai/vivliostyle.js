@@ -667,11 +667,20 @@ export class Styler implements AbstractStyler {
   }
 
   private determineRootSizes(elemStyle: CssCascade.ElementStyle): void {
+    this.context.rootFontMetricsReady = false;
+    this.context.resolvingRootFontSize = true;
+    // Root font-size and line-height self-references use initial font metrics,
+    // including when root sizes are recomputed after a script loads fonts.
+    this.context.rootLineHeight =
+      this.context.measureFontUnit("lh", this.context.initialFontSize) ??
+      this.context.initialFontSize * this.context.pref.lineHeight;
     const fontSize = elemStyle["font-size"] as CssCascade.CascadeValue;
     let isRelativeFontSize = true;
+    let isInvalidFontSize = false;
     if (fontSize && !Css.isDefaultingValue(fontSize.value)) {
       const evaluated = fontSize.evaluate(this.context);
       const val = this.resolveRootSizingCalc(evaluated);
+      isInvalidFontSize = !CSS.supports("font-size", val.toString());
       const fromRelativeCalc =
         evaluated instanceof Css.Func && val instanceof Css.Numeric;
       // The absolute size keywords (e.g. "small") and the relative keywords
@@ -709,20 +718,15 @@ export class Styler implements AbstractStyler {
             break;
           default: {
             const unitSize = Exprs.defaultUnitSizes[val.unit];
-            const ratio = CssCascade.browserFontRelativeUnitRatio(val.unit);
+            const metric = this.context.measureFontUnit(
+              val.unit,
+              this.context.initialFontSize,
+            );
             if (unitSize) {
               px *= unitSize;
               isRelativeFontSize = fromRelativeCalc;
-            } else if (ratio != null) {
-              // A unit that only the browser resolves, e.g. `ch`: its metric is
-              // not obtainable here, so the assumption of CSS Values 4 for such
-              // a unit is used against the initial font size, which is the font
-              // size of the root element (it has no parent), and the raw number
-              // of the value must not be treated as pixels. The root element
-              // must use this assumed size as well, or it would render the real
-              // metric of the font while `rem` and the page context use the
-              // assumption. (Review)
-              px *= ratio * this.context.initialFontSize;
+            } else if (metric != null) {
+              px *= metric;
               isRelativeFontSize = true;
             } else if (Exprs.isViewportRelativeLengthUnit(val.unit)) {
               // The unit size of a viewport relative unit, e.g. `2vw`, must not
@@ -793,14 +797,45 @@ export class Styler implements AbstractStyler {
         this.context.isRelativeRootFontSize = isRelativeFontSize;
       }
     }
+    this.context.resolvingRootFontSize = false;
+    this.context.rootFontProperties = CssCascade.getFontMetricProperties(
+      elemStyle,
+      this.context,
+    );
+    const rootFontWeight = elemStyle["font-weight"] as
+      CssCascade.CascadeValue | undefined;
+    const rootWeight = rootFontWeight?.evaluate(this.context, "font-weight");
+    if (
+      rootWeight instanceof Css.Ident &&
+      (CssCascade.hasKeywordName(rootWeight, "bolder") ||
+        CssCascade.hasKeywordName(rootWeight, "lighter"))
+    ) {
+      // The root has no parent element, so relative weights use the initial
+      // font weight. Resolve the keyword before measuring: the hidden probe is
+      // appended to the viewer body, whose weight may differ from the source
+      // document's initial weight.
+      this.context.rootFontProperties["font-weight"] = String(
+        CssCascade.resolveRelativeFontWeight(rootWeight, 400),
+      );
+    }
+    // A default root font-size can stay implicit while root-metric terms in
+    // calc() already need to use the source root's font settings.
+    this.context.rootFontMetricsReady =
+      this.context.rootFontSize != null ||
+      isInvalidFontSize ||
+      !fontSize ||
+      Css.isDefaultingValue(fontSize.value);
     const rootFontSize =
       this.context.rootFontSize ?? this.context.initialFontSize;
     const lineHeight = elemStyle["line-height"] as CssCascade.CascadeValue;
     let rootLineHeight: number | null = null;
+    let normalLineHeight =
+      !!lineHeight && Css.isDefaultingValue(lineHeight.value);
     let fromRelativeCalc = false;
     if (lineHeight && !Css.isDefaultingValue(lineHeight.value)) {
       const evaluated = lineHeight.evaluate(this.context);
       const val = this.resolveRootSizingCalc(evaluated);
+      normalLineHeight = CssCascade.hasKeywordName(val, "normal");
       fromRelativeCalc =
         evaluated instanceof Css.Func && val instanceof Css.Numeric;
       if (val instanceof Css.Num) {
@@ -826,22 +861,15 @@ export class Styler implements AbstractStyler {
             break;
           default: {
             const unitSize = Exprs.defaultUnitSizes[val.unit];
-            const ratio = CssCascade.browserFontRelativeUnitRatio(val.unit);
+            const metric = this.context.measureFontUnit(
+              val.unit,
+              rootFontSize,
+              this.context.rootFontProperties,
+            );
             if (unitSize) {
               px = val.num * unitSize;
-            } else if (ratio != null) {
-              // As above: a unit that only the browser resolves is relative to
-              // the font size of the root element, not to the raw number.
-              // (Review)
-              px =
-                val.num *
-                ratio *
-                (rootFontSize ?? this.context.initialFontSize);
-              // The assumed size is the one the root element uses: the browser
-              // would resolve the unit with the real metrics of its font and
-              // the root line height of this context (which the `rlh` unit and
-              // the page context use) would differ from the rendered one.
-              // (Review)
+            } else if (metric != null) {
+              px = val.num * metric;
               fromRelativeCalc = true;
             } else if (Exprs.isViewportRelativeLengthUnit(val.unit)) {
               px = val.num * this.context.queryUnitSize(val.unit, true);
@@ -875,6 +903,7 @@ export class Styler implements AbstractStyler {
           val,
           rootFontSize,
           this.context.rootLineHeight,
+          this.context.rootFontProperties,
         );
         if (resolved != null) {
           rootLineHeight = resolved;
@@ -894,7 +923,15 @@ export class Styler implements AbstractStyler {
       }
     }
     this.context.rootLineHeight =
-      rootLineHeight ?? this.context.fontSize() * this.context.pref.lineHeight;
+      rootLineHeight ??
+      (normalLineHeight
+        ? this.context.measureFontUnit(
+            "lh",
+            rootFontSize,
+            this.context.rootFontProperties,
+          )
+        : null) ??
+      rootFontSize * this.context.pref.lineHeight;
     this.context.isRootLineHeightFromRelativeCalc = fromRelativeCalc;
   }
 
