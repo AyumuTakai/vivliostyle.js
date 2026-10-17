@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SVG in object and embed elements on the pages after the first</title>
+  </head>
+  <body>
+    <p>
+      The SVG images on the second and the third pages must be shown, and the
+      rendering must not wait for a timeout.
+    </p>
+    <p style="break-before: page">An object element on the second page:</p>
+    <object data="embedded-svg-image.svg" type="image/svg+xml"></object>
+    <p style="break-before: page">An embed element on the third page:</p>
+    <embed src="embedded-svg-image.svg" type="image/svg+xml" />
+  </body>
+</html>

@@ -236,6 +236,10 @@ module.exports = [
         title: "rem in position: relative element",
       },
       { file: "svg_properties.html", title: "SVG properties" },
+      {
+        file: "embedded-svg-later-pages.html",
+        title: "SVG in object and embed elements after the first page",
+      },
       { file: "font_property.html", title: "Font property" },
       {
         file: "relative-font-keywords-root.html",

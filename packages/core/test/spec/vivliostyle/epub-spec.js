@@ -1098,7 +1098,12 @@ describe("epub", function () {
 
     it("reuses the requested slot when a final-page rerender shrinks the spine", function (done) {
       var view = Object.create(adapt_epub.OPFView.prototype);
-      var page = { spineIndex: 0, offset: 15, fetchers: [] };
+      var page = {
+        spineIndex: 0,
+        offset: 15,
+        fetchers: [],
+        embeddedContentFetchers: [],
+      };
       var stalePageReplaced = jasmine.createSpy("stalePageReplaced");
       var currentItem = {
         spineIndex: 0,
@@ -1266,7 +1271,12 @@ describe("epub", function () {
 
     it("defers final-page completion while a counter scope is still pushed", function (done) {
       var view = Object.create(adapt_epub.OPFView.prototype);
-      var page = { spineIndex: 0, offset: 0, fetchers: [] };
+      var page = {
+        spineIndex: 0,
+        offset: 0,
+        fetchers: [],
+        embeddedContentFetchers: [],
+      };
       var removeLayoutStyle = jasmine.createSpy("removeLayoutStyle");
       var restorePageNumberContext = jasmine.createSpy(
         "restorePageNumberContext",
@@ -2294,7 +2304,12 @@ describe("epub", function () {
         return null;
       };
       view.makePage = function () {
-        return { spineIndex: 0, offset: 0, fetchers: [] };
+        return {
+          spineIndex: 0,
+          offset: 0,
+          fetchers: [],
+          embeddedContentFetchers: [],
+        };
       };
       view.resolvePageTypeForRenderSlot = function () {};
       view.finishPageContainer = function () {};
@@ -2323,6 +2338,69 @@ describe("epub", function () {
         expect(payloads[0].fraction).toBeCloseTo(1 / 6, 5);
         done();
       });
+    });
+
+    it("waits for the content of object and embed elements before hiding the page", async function () {
+      var view = createFakeView([100]);
+      var events = [];
+      var resolveContent;
+      var fetcher = {
+        get: function () {
+          return new Promise(function (resolve) {
+            resolveContent = function () {
+              events.push("content loaded");
+              resolve(true);
+            };
+          });
+        },
+      };
+      view.counterStore = { finishPage: function () {} };
+      view.isInCounterResolveScope = function () {
+        return false;
+      };
+      view.preparePageCountersForRender = function () {
+        return null;
+      };
+      view.makePage = function () {
+        return {
+          spineIndex: 0,
+          offset: 0,
+          fetchers: [fetcher],
+          embeddedContentFetchers: [fetcher],
+        };
+      };
+      view.resolvePageTypeForRenderSlot = function () {};
+      view.finishPageContainer = function () {
+        events.push("page hidden");
+      };
+      view.maybeRelayoutFollowingPage = function () {
+        return Promise.resolve();
+      };
+      view.resolveUnresolvedReferencesForPage = function (viewItem, page) {
+        return Promise.resolve(page);
+      };
+
+      var viewItem = createFakeViewItem(view, 0, 100);
+      view.spineItems[0] = viewItem;
+      viewItem.instance.getPageNumberContextDepth = function () {
+        return 0;
+      };
+      viewItem.instance.pushPageNumberContext = function () {};
+      viewItem.instance.restorePageNumberContextDepth = function () {};
+      viewItem.instance.getPosition = function () {
+        return 50;
+      };
+      viewItem.instance.layoutNextPage = function () {
+        return Promise.resolve({ page: 1 });
+      };
+      var rendered = view.renderSinglePage(viewItem, { page: 0 });
+      await new Promise(function (resolve) {
+        setTimeout(resolve, 0);
+      });
+      expect(events).toEqual([]);
+      resolveContent();
+      await rendered;
+      expect(events).toEqual(["content loaded", "page hidden"]);
     });
   });
 });

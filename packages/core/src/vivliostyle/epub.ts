@@ -35,7 +35,7 @@ import * as Net from "./net";
 import * as OPS from "./ops";
 import * as Plugin from "./plugin";
 import * as SemanticFootnote from "./semantic-footnote";
-import { sleep } from "./task-util";
+import { sleep, waitForFetchers } from "./task-util";
 import * as Toc from "./toc";
 import * as Vgen from "./vgen";
 import * as Vtree from "./vtree";
@@ -2859,6 +2859,9 @@ export class OPFView implements Vgen.CustomRendererFactory {
         }
       }
       const pageIndex = pos ? pos.page - 1 : pageIndexToRender;
+      // The content of <object> and <embed> is not loaded while the page is
+      // hidden, so it would be missing when the page is shown or printed.
+      await waitForFetchers(page.embeddedContentFetchers);
       this.finishPageContainer(viewItem, page, pageIndex);
       this.counterStore.finishPage(page.spineIndex, pageIndex);
       if (Plugin.getHooksForName(Plugin.HOOKS.PAGINATION_PROGRESS).length) {

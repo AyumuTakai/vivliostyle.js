@@ -134,6 +134,12 @@ export class Page extends Base.SimpleEventTarget {
   offset: number = -1;
   side: Constants.PageSide | null = null;
   fetchers: TaskUtil.Fetcher<{}>[] = [];
+  /**
+   * Fetchers of the content of the `<object>` and `<embed>` elements, which
+   * are waited for before the page is hidden: the browser does not load the
+   * content of those elements while they are not displayed.
+   */
+  embeddedContentFetchers: TaskUtil.Fetcher<{}>[] = [];
   marginBoxes: {
     top: { [key: string]: Container };
     bottom: { [key: string]: Container };

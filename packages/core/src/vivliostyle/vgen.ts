@@ -2641,7 +2641,9 @@ export class ViewFactory
           result.namespaceURI === Base.NS.XHTML &&
           result.hasAttribute("data")
         ) {
-          this.page.fetchers.push(Net.loadElement(result));
+          const fetcher = Net.loadElement(result);
+          this.page.fetchers.push(fetcher);
+          this.page.embeddedContentFetchers.push(fetcher);
         }
 
         // Wait for embed element content to load (e.g., <embed src="image.png">).
@@ -2650,7 +2652,9 @@ export class ViewFactory
           result.namespaceURI === Base.NS.XHTML &&
           result.hasAttribute("src")
         ) {
-          this.page.fetchers.push(Net.loadElement(result));
+          const fetcher = Net.loadElement(result);
+          this.page.fetchers.push(fetcher);
+          this.page.embeddedContentFetchers.push(fetcher);
         }
 
         // Wait for iframe content to load. This ensures embedded documents
