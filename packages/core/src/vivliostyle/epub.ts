@@ -34,6 +34,7 @@ import * as Logging from "./logging";
 import * as Net from "./net";
 import * as OPS from "./ops";
 import * as Plugin from "./plugin";
+import * as RubyRepeat from "./ruby-repeat";
 import * as SemanticFootnote from "./semantic-footnote";
 import { sleep, waitForFetchers } from "./task-util";
 import * as Toc from "./toc";
@@ -2862,6 +2863,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
       // The content of <object> and <embed> is not loaded while the page is
       // hidden, so it would be missing when the page is shown or printed.
       await waitForFetchers(page.embeddedContentFetchers);
+      RubyRepeat.hideRepeatedRuby(page.container);
       this.finishPageContainer(viewItem, page, pageIndex);
       this.counterStore.finishPage(page.spineIndex, pageIndex);
       if (Plugin.getHooksForName(Plugin.HOOKS.PAGINATION_PROGRESS).length) {

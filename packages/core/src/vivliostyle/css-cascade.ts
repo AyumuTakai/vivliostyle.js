@@ -100,6 +100,7 @@ export const inheritedProps = {
   quotes: true,
   "ruby-align": true,
   "ruby-position": true,
+  "ruby-repeat": true,
   "shape-rendering": true,
   stroke: true,
   "stroke-dasharray": true,

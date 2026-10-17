@@ -244,6 +244,10 @@ module.exports = [
         file: "iframe-print-zoom.html",
         title: "Documents in iframes printed at their size",
       },
+      {
+        file: "ruby-repeat-hide-on-page.html",
+        title: "Ruby only at the first occurrence on each page",
+      },
       { file: "font_property.html", title: "Font property" },
       {
         file: "relative-font-keywords-root.html",

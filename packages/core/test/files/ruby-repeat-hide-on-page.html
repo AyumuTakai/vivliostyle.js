@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>-viv-ruby-repeat: hide-on-page</title>
+    <style>
+      @page {
+        size: 105mm 148mm;
+        margin: 15mm;
+        @top-center {
+          content: element(running-title);
+        }
+      }
+      header {
+        position: running(running-title);
+      }
+      body {
+        font-size: 10pt;
+        line-height: 2;
+      }
+      ruby {
+        -viv-ruby-repeat: hide-on-page;
+      }
+      .always ruby {
+        -viv-ruby-repeat: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <ruby>漢字<rt>かんじ</rt></ruby
+      >の本
+    </header>
+    <p>
+      On each page, only the first ruby of a word is shown (by the base and the
+      annotation, or by data-ruby-key). The ruby in the running header is not
+      counted. The layout is the same as without the property.
+    </p>
+    <div>
+      <p>
+        1. <ruby>漢字<rt>かんじ</rt></ruby
+        >と<ruby>漢字<rt>かんじ</rt></ruby
+        >、<ruby>生<rt>なま</rt></ruby
+        >と<ruby>生<rt>せい</rt></ruby
+        >、<ruby data-ruby-key="kanji">漢<rt>かん</rt>字<rt>じ</rt></ruby
+        >。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。
+      </p>
+      <p>
+        2. <ruby>漢字<rt>かんじ</rt></ruby
+        >と<ruby>漢字<rt>かんじ</rt></ruby
+        >、<ruby>生<rt>なま</rt></ruby
+        >と<ruby>生<rt>せい</rt></ruby
+        >、<ruby data-ruby-key="kanji">漢<rt>かん</rt>字<rt>じ</rt></ruby
+        >。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。
+      </p>
+      <p>
+        3. <ruby>漢字<rt>かんじ</rt></ruby
+        >と<ruby>漢字<rt>かんじ</rt></ruby
+        >、<ruby>生<rt>なま</rt></ruby
+        >と<ruby>生<rt>せい</rt></ruby
+        >、<ruby data-ruby-key="kanji">漢<rt>かん</rt>字<rt>じ</rt></ruby
+        >。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。
+      </p>
+      <p>
+        4. <ruby>漢字<rt>かんじ</rt></ruby
+        >と<ruby>漢字<rt>かんじ</rt></ruby
+        >、<ruby>生<rt>なま</rt></ruby
+        >と<ruby>生<rt>せい</rt></ruby
+        >、<ruby data-ruby-key="kanji">漢<rt>かん</rt>字<rt>じ</rt></ruby
+        >。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。
+      </p>
+      <p>
+        5. <ruby>漢字<rt>かんじ</rt></ruby
+        >と<ruby>漢字<rt>かんじ</rt></ruby
+        >、<ruby>生<rt>なま</rt></ruby
+        >と<ruby>生<rt>せい</rt></ruby
+        >、<ruby data-ruby-key="kanji">漢<rt>かん</rt>字<rt>じ</rt></ruby
+        >。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。
+      </p>
+      <p>
+        6. <ruby>漢字<rt>かんじ</rt></ruby
+        >と<ruby>漢字<rt>かんじ</rt></ruby
+        >、<ruby>生<rt>なま</rt></ruby
+        >と<ruby>生<rt>せい</rt></ruby
+        >、<ruby data-ruby-key="kanji">漢<rt>かん</rt>字<rt>じ</rt></ruby
+        >。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。これは本文の段落です。
+      </p>
+    </div>
+    <p class="always">
+      <ruby>漢字<rt>かんじ</rt></ruby
+      >（-viv-ruby-repeat: auto: always shown）
+    </p>
+  </body>
+</html>

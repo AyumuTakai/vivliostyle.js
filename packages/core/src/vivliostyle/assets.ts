@@ -658,6 +658,9 @@ footnote-policy = auto | line;
 /* CSS Repeated Headers and Footers */
 [viv]repeat-on-break = auto | none | header | footer;
 
+/* Ruby shown only at the first occurrence of the word on each page */
+[viv]ruby-repeat = auto | hide-on-page;
+
 /* Compatibility */
 [webkit]text-fill-color = COLOR;
 [webkit]text-stroke-color = COLOR;
@@ -1691,6 +1694,11 @@ span[data-viv-leader] {
 }
 [style*="--viv-marker-text-shadow"]::marker {
   text-shadow: var(--viv-marker-text-shadow);
+}
+
+/* -viv-ruby-repeat: hide-on-page */
+[data-viv-ruby-hidden] > :is(rt, rtc) {
+  visibility: hidden;
 }
 
 /* initial-letter */

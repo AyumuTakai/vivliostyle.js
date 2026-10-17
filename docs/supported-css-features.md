@@ -701,6 +701,19 @@ Note: This spec proposal is not submitted to CSS Working Group yet.
 
 - [repeat-on-break](https://specs.rivoal.net/css-repeat/#propdef-repeat-on-break)
 
+## Ruby at the first occurrence on each page (Vivliostyle extension)
+
+- `-viv-ruby-repeat: auto | hide-on-page` (inherited, initial value `auto`)
+  - `hide-on-page`: On each page, the ruby annotation (`rt`, `rtc`) of a word is shown only at its first occurrence, in the order of the source. A word is the pair of the base text and the annotation text, or the value of the `data-ruby-key` attribute of the `ruby` element.
+  - The repeated annotations are hidden with `visibility: hidden`, so the layout (line spacing, line breaks and page breaks) is the same as with `auto`.
+  - The ruby in the page margin boxes (running elements) is not counted and not hidden.
+
+```css
+ruby {
+  -viv-ruby-repeat: hide-on-page;
+}
+```
+
 ## Semantic Footnotes (role / epub:type attributes)
 
 Vivliostyle supports footnotes using semantic attributes on HTML elements, in addition to CSS GCPM `float: footnote` property. Footnote references and footnote content are identified by `role` attributes ([DPUB-ARIA](https://www.w3.org/TR/dpub-aria-1.1/)) or `epub:type` attributes ([EPUB 3 Structural Semantics Vocabulary](https://www.w3.org/TR/epub-ssv-11/)).

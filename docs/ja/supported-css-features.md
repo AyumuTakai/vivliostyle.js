@@ -701,6 +701,19 @@ Vivliostyle は CSS マルチカラムレイアウトをサポートしていま
 
 - [repeat-on-break](https://specs.rivoal.net/css-repeat/#propdef-repeat-on-break)
 
+## ページ初出のみのルビ（Vivliostyle 独自拡張）
+
+- `-viv-ruby-repeat: auto | hide-on-page`（継承する。初期値は `auto`）
+  - `hide-on-page`: 各ページで、同じ語のルビ（`rt`・`rtc`）を原稿の順で最初の1回だけ表示します。同じ語かどうかは、親文字とルビの文字列の組、または `ruby` 要素の `data-ruby-key` 属性の値で判定します。
+  - 2回目以降のルビは `visibility: hidden` で隠すため、行送り・改行・改ページは `auto` のときと変わりません。
+  - ページマージンボックス（ランニング要素）の中のルビは、数えず、隠しもしません。
+
+```css
+ruby {
+  -viv-ruby-repeat: hide-on-page;
+}
+```
+
 ## セマンティック脚注（role 属性 / epub:type 属性）
 
 Vivliostyle は、CSS GCPM の `float: footnote` プロパティによる脚注に加えて、HTML 要素のセマンティック属性を使った脚注をサポートしています。`role` 属性（[DPUB-ARIA](https://www.w3.org/TR/dpub-aria-1.1/)）または `epub:type` 属性（[EPUB 3 Structural Semantics Vocabulary](https://www.w3.org/TR/epub-ssv-11/)）によって、脚注参照と脚注本文を識別します。

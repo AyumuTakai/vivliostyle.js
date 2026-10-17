@@ -35,6 +35,7 @@ import * as Font from "./font";
 import { fontMetricProperties, type FontProperties } from "./font-metrics";
 import * as LayoutHelper from "./layout-helper";
 import * as RubyEmphasis from "./ruby-emphasis";
+import * as RubyRepeat from "./ruby-repeat";
 import * as Logging from "./logging";
 import * as Matchers from "./matchers";
 import * as Net from "./net";
@@ -2680,6 +2681,12 @@ export class ViewFactory
             "data-viv-ruby-position",
             computedStyle["ruby-position"].toString(),
           );
+        }
+        if (
+          computedStyle["ruby-repeat"] === Css.getName("hide-on-page") &&
+          (result.localName === "ruby" || display === Css.getName("ruby"))
+        ) {
+          RubyRepeat.markRuby(result, element);
         }
         RubyEmphasis.prepareRubyAnnotation(
           result,

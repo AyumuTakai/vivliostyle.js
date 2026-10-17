@@ -1887,6 +1887,7 @@ const propsExcludedFromAll = [
   "required",
   "required-partitions",
   "ruby-align",
+  "ruby-repeat",
   "shape-inside",
   "snap-height",
   "snap-width",

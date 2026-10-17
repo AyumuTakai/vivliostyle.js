@@ -1103,6 +1103,7 @@ describe("epub", function () {
         offset: 15,
         fetchers: [],
         embeddedContentFetchers: [],
+        container: document.createElement("div"),
       };
       var stalePageReplaced = jasmine.createSpy("stalePageReplaced");
       var currentItem = {
@@ -1276,6 +1277,7 @@ describe("epub", function () {
         offset: 0,
         fetchers: [],
         embeddedContentFetchers: [],
+        container: document.createElement("div"),
       };
       var removeLayoutStyle = jasmine.createSpy("removeLayoutStyle");
       var restorePageNumberContext = jasmine.createSpy(
@@ -2309,6 +2311,8 @@ describe("epub", function () {
           offset: 0,
           fetchers: [],
           embeddedContentFetchers: [],
+          container: document.createElement("div"),
+          container: document.createElement("div"),
         };
       };
       view.resolvePageTypeForRenderSlot = function () {};
@@ -2367,6 +2371,7 @@ describe("epub", function () {
           offset: 0,
           fetchers: [fetcher],
           embeddedContentFetchers: [fetcher],
+          container: document.createElement("div"),
         };
       };
       view.resolvePageTypeForRenderSlot = function () {};
